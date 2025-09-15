@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.egg-info/
+*.log
+
+# Virtual env
+myenv/
+venv/
+.env/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+#env
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# FastAPI server runtime
+storage/

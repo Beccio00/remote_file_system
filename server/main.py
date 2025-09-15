@@ -4,6 +4,13 @@ from pydantic import BaseModel
 from pathlib import Path
 import shutil
 import os
+import uvicorn
+from dotenv import load_dotenv
+
+HOST = os.getenv("HOST", "127.0.0.1")
+PORT = int(os.getenv("PORT", 8000))
+BASE_DIR = Path(os.getenv("BASE_DIR", "./storage"))
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
 app = FastAPI()
 
@@ -74,3 +81,11 @@ def delete_path(subpath: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete error: {e}")
     return {"status": "ok"}
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host=HOST,
+        port=PORT,
+        reload=DEBUG
+    )
