@@ -24,6 +24,8 @@ pub enum FsError {
     Other(String),
 }
 
+
+// Maybe can not be needed
 impl fmt::Display for FsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
