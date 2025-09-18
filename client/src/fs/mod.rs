@@ -1,7 +1,7 @@
 // Common trait between different OS implementations
 use std::path::Path;
-use async_trait::async_trait;
 use std::fmt;
+use async_trait::async_trait;
 
 pub mod linux;
 pub mod macos;
@@ -93,29 +93,22 @@ pub trait FuseAdapter {
 }
 
 
-///??
-/// Crea l'adapter appropriato per la piattaforma corrente
-pub fn create_adapter(server_url: String) -> Result<Box<dyn FuseAdapter>, FsError> {
+pub fn create_adapter() -> Result<Box<dyn FuseAdapter>, FsError> {
     #[cfg(target_os = "linux")]
     {
         use crate::fs::linux::LinuxFuseAdapter;
-        Ok(Box::new(LinuxFuseAdapter::new(server_url)?))
+        Ok(Box::new(LinuxFuseAdapter::init()?))
     }
     
     #[cfg(target_os = "macos")]
     {
         use crate::fs::macos::MacOSFuseAdapter;
-        Ok(Box::new(MacOSFuseAdapter::new(server_url)?))
+        Ok(Box::new(MacOSFuseAdapter::init()?))
     }
     
     #[cfg(target_os = "windows")]
     {
         use crate::fs::windows::WindowsFuseAdapter;
-        Ok(Box::new(WindowsFuseAdapter::new(server_url)?))
-    }
-    
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        Err(FsError::Other("Unsupported platform".to_string()))
+        Ok(Box::new(WindowsFuseAdapter::init()?))
     }
 }
