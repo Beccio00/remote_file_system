@@ -11,13 +11,13 @@ pub struct RemoteEntry {
     pub size: u64,
 }
 
-pub struct HttpFsClient {
+pub struct HttpClient {
     base_url: String,
     client: Client,
     auth_token: Option<String>,
 }
 
-impl HttpFsClient {
+impl HttpClient {
     pub fn new(base_url: String, auth_token: Option<String>) -> Self {
         let client = Client::new();
         Self { base_url, client, auth_token }

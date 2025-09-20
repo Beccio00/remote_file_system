@@ -1,10 +1,10 @@
-use crate::fs::FuseAdapter;
+use crate::fs::RemoteFSAdapter;
 
 #[cfg(target_os = "macos")]
 pub struct MacOSFuseAdapter;
 
 #[cfg(target_os = "macos")]
-impl FuseAdapter for MacOSFuseAdapter {
+impl RemoteFSAdapter for MacOSFuseAdapter {
     fn mount(&self, mountpoint: &str) -> Result<(), String> {
         todo!()
     }

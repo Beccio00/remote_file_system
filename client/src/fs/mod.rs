@@ -1,12 +1,13 @@
 // Common trait between different OS implementations
 use std::path::Path;
 use std::fmt;
-use async_trait::async_trait;
+use crate::http_client::HttpClient;
 
 pub mod linux;
 pub mod macos;
 pub mod windows;
 
+// Maybe can not be needed
 #[derive(Debug)]
 pub enum FsError {
     MountPointNotFound(String),
@@ -25,7 +26,6 @@ pub enum FsError {
 }
 
 
-// Maybe can not be needed
 impl fmt::Display for FsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -54,63 +54,10 @@ impl From<String> for FsError {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MountOptions {
-    pub read_only: bool,
-    
-    pub allow_other: bool,
-    
-    pub auto_unmount: bool,
-    
-    pub fs_name: String,
-    
-    pub platform_options: Vec<String>,
-}
+pub trait RemoteFSAdapter {
+    fn new(client: HttpClient) -> Self;
 
-impl Default for MountOptions {
-    fn default() -> Self {
-        Self {
-            read_only: false,
-            allow_other: true,
-            auto_unmount: true,
-            fs_name: "remote-fs".to_string(),
-            platform_options: Vec::new(),
-        }
-    }
-}
+    fn mount(self, mountpoint: &str) -> Result<(), FsError> where Self: Sized;
 
-#[async_trait]
-pub trait FuseAdapter {
-    fn init() -> Result<Self, FsError> where Self: Sized;
-    
-    fn new(server_url: String) -> Result<Self, FsError> where Self: Sized;
-    
-    async fn mount(&self, mountpoint: &str, options: Option<MountOptions>) -> Result<(), FsError>;
-
-    async fn unmount(&self, mountpoint: &str) -> Result<(), FsError>;
-
-    fn is_mounted(&self, mountpoint: &str) -> Result<bool, FsError>;
-    
-    async fn wait_until_unmount(&self) -> Result<(), FsError>;
-}
-
-
-pub fn create_adapter() -> Result<Box<dyn FuseAdapter>, FsError> {
-    #[cfg(target_os = "linux")]
-    {
-        use crate::fs::linux::LinuxFuseAdapter;
-        Ok(Box::new(LinuxFuseAdapter::init()?))
-    }
-    
-    #[cfg(target_os = "macos")]
-    {
-        use crate::fs::macos::MacOSFuseAdapter;
-        Ok(Box::new(MacOSFuseAdapter::init()?))
-    }
-    
-    #[cfg(target_os = "windows")]
-    {
-        use crate::fs::windows::WindowsFuseAdapter;
-        Ok(Box::new(WindowsFuseAdapter::init()?))
-    }
+    fn unmount(&self, mountpoint: &str) -> Result<(), ()>;
 }

@@ -1,10 +1,10 @@
-use crate::fs::FuseAdapter;
+use crate::fs::RemoteFSAdapter;
 
 #[cfg(target_os = "windows")]
 pub struct WindowsFuseAdapter;
 
 #[cfg(target_os = "windows")]
-impl FuseAdapter for WindowsFuseAdapter {
+impl RemoteFSAdapter for WindowsFuseAdapter {
     fn mount(&self, mountpoint: &str) -> Result<(), String> {
         todo!();    
     }
