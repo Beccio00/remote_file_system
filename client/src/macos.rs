@@ -2,7 +2,6 @@ use crate::common::RemoteFS;
 use fuser::MountOption;
 
 pub fn run(mountpoint: &str) {
-    // Check if macFUSE is available
     if !std::path::Path::new("/Library/Frameworks/macFUSE.framework").exists() {
         eprintln!("macFUSE is not installed.");
         eprintln!("Please install it with: brew install --cask macfuse");
@@ -15,15 +14,17 @@ pub fn run(mountpoint: &str) {
 
     let fs = RemoteFS::new("http://127.0.0.1:8000");
 
-    // macOS-specific mount options
     let options = vec![
         MountOption::FSName("remote-fs".to_string()),
         MountOption::Subtype("remote-fs".to_string()),
-        // Enable extended attributes on macOS
         MountOption::DefaultPermissions,
-        // Allow other users to access the mount (optional)
         MountOption::AllowOther,
     ];
+    if options.contains(&MountOption::AutoUnmount) {
+        println!("Auto-unmount on exit is ENABLED ✅");
+    } else {
+        println!("Auto-unmount is DISABLED ❌ (use --auto-unmount to enable)");
+    }
 
     match fuser::mount2(fs, mountpoint, &options) {
         Ok(()) => {

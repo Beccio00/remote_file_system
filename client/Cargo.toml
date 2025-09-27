@@ -9,8 +9,6 @@ reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 time = "0.3"
-tokio = { version = "1.0", features = ["full"] }
-bytes = "1.0"
 
 [target.'cfg(unix)'.dependencies]
 fuser = { version = "0.14", features = ["abi-7-31"] }
@@ -18,10 +16,3 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 dokan = "0.3.1+dokan206"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-fuser = "0.14"
-
-[[bin]]
-name = "client"
-path = "src/main.rs"
