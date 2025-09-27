@@ -1,3 +1,4 @@
+
 use fuser::{
     FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request
 };
@@ -149,48 +150,47 @@ impl Filesystem for RemoteFS {
             return;
         }
 
-        if let Some(file_path) = path {
-            // Try to get file info from parent directory listing
-            if let Some(parent_path) = file_path.rsplit('/').nth(1) {
-                let parent_path = if parent_path.is_empty() {
-                    ""
-                } else {
-                    parent_path
-                };
-                if let Ok(entries) = self.list_dir(parent_path) {
-                    let filename = file_path.split('/').last().unwrap_or("");
-                    for entry in entries {
-                        if entry.name == filename {
-                            let kind = if entry.is_dir {
-                                FileType::Directory
-                            } else {
-                                FileType::RegularFile
-                            };
+       if let Some(file_path) = path {
+        let parent_path = if file_path.contains('/') {
+            let parts: Vec<&str> = file_path.split('/').collect();
+            parts[..parts.len()-1].join("/")
+        } else {
+            String::new()
+        };
 
-                            let attr = FileAttr {
-                                ino,
-                                size: entry.size,
-                                blocks: (entry.size + 511) / 512,
-                                atime: SystemTime::now(),
-                                mtime: SystemTime::now(),
-                                ctime: SystemTime::now(),
-                                crtime: SystemTime::now(),
-                                kind,
-                                perm: if entry.is_dir { 0o755 } else { 0o644 },
-                                nlink: if entry.is_dir { 2 } else { 1 },
-                                uid: 1000,
-                                gid: 1000,
-                                rdev: 0,
-                                blksize: 512,
-                                flags: 0,
-                            };
-                            reply.attr(&ttl, &attr);
-                            return;
-                        }
-                    }
+        if let Ok(entries) = self.list_dir(&parent_path) {
+            let filename = file_path.split('/').last().unwrap_or("");
+            for entry in entries {
+                if entry.name == filename {
+                    let kind = if entry.is_dir {
+                        FileType::Directory
+                    } else {
+                        FileType::RegularFile
+                    };
+
+                    let attr = FileAttr {
+                        ino,
+                        size: entry.size,
+                        blocks: (entry.size + 511) / 512,
+                        atime: SystemTime::now(),
+                        mtime: SystemTime::now(),
+                        ctime: SystemTime::now(),
+                        crtime: SystemTime::now(),
+                        kind,
+                        perm: if entry.is_dir { 0o755 } else { 0o644 },
+                        nlink: if entry.is_dir { 2 } else { 1 },
+                        uid: 1000,
+                        gid: 1000,
+                        rdev: 0,
+                        blksize: 512,
+                        flags: 0,
+                    };
+                    reply.attr(&ttl, &attr);
+                    return;
                 }
             }
         }
+    }
 
         reply.error(ENOENT);
     }
