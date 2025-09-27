@@ -15,13 +15,17 @@ use std::time::{Duration, SystemTime};
 pub fn run(mountpoint: &str) {
     println!("Starting Remote File System on Linux...");
     println!("Mounting at: {}", mountpoint);
+    println!("Press Ctrl+C to unmount and exit.");
 
     let fs = RemoteFS::new("http://127.0.0.1:8000");
 
     let options = vec![
         MountOption::FSName("remote-fs".to_string()),
         MountOption::DefaultPermissions,
+        MountOption::AutoUnmount,  
+        MountOption::AllowOther,   
     ];
+
 
     match fuser::mount2(fs, mountpoint, &options) {
         Ok(()) => {
@@ -36,5 +40,9 @@ pub fn run(mountpoint: &str) {
             std::process::exit(1);
         }
     }
+
+    println!("Unmounting file system...");
+
+
 }
 
