@@ -1,6 +1,7 @@
+use crate::common::RemoteFS;
+use fuser::MountOption;
 use fuser::{
-    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
-    Request,
+    FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
 };
 use libc::ENOENT;
 use reqwest::blocking::Client;
@@ -18,13 +19,29 @@ struct RemoteEntry {
 }
 
 pub fn run(mountpoint: &str) {
+    println!("Starting Remote File System on Linux...");
+    println!("Mounting at: {}", mountpoint);
+
     let fs = RemoteFS::new("http://127.0.0.1:8000");
-    fuser::mount2(
-        fs,
-        mountpoint,
-        &[MountOption::FSName("remote-fs".to_string())],
-    )
-    .unwrap();
+
+    let options = vec![
+        MountOption::FSName("remote-fs".to_string()),
+        MountOption::DefaultPermissions,
+    ];
+
+    match fuser::mount2(fs, mountpoint, &options) {
+        Ok(()) => {
+            println!("File system mounted successfully at {}", mountpoint);
+        }
+        Err(e) => {
+            eprintln!("Failed to mount file system: {}", e);
+            eprintln!("Make sure:");
+            eprintln!("1. FUSE is installed (apt install fuse)");
+            eprintln!("2. The mount point exists and is empty");
+            eprintln!("3. You have the necessary permissions");
+            std::process::exit(1);
+        }
+    }
 }
 
 struct RemoteFS {

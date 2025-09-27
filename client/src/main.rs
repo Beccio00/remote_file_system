@@ -1,3 +1,5 @@
+mod common;
+
 #[cfg(target_os = "linux")]
 mod linux;
 
@@ -18,7 +20,7 @@ fn main() {
     linux::run(&args[1]);
 
     #[cfg(target_os = "macos")]
-    macos::run();
+    macos::run(&args[1]);
 
     #[cfg(target_os = "windows")]
     windows::run();
