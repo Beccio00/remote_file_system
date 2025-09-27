@@ -190,6 +190,8 @@ impl Filesystem for RemoteFS {
         _fh: u64,
         offset: i64,
         size: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
         let i2p = self.inode_to_path.lock().unwrap();
@@ -200,10 +202,10 @@ impl Filesystem for RemoteFS {
                     let slice = &data[(offset as usize)..end];
                     reply.data(slice);
                 }
-                Err(_) => reply.error(ENOENT),
+                Err(_) => reply.error(libc::ENOENT),
             }
         } else {
-            reply.error(ENOENT);
+            reply.error(libc::ENOENT);
         }
     }
 }
