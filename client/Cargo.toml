@@ -1,31 +1,11 @@
 [package]
 name = "client"
 version = "0.1.0"
-edition = "2024"
+edition = "2025"
 
 [dependencies]
-async-trait = "0.1.89"
-tokio = { version = "1.36", features = ["full"] }
-reqwest = { version = "0.11", features = ["json", "blocking"] }
+fuser = { version = "0.14", features = ["abi-7-31"] }
+reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-lru = "0.10"
-log = "0.4"
-env_logger = "0.10"
-tracing = "0.1.41"
-fuser = "0.16.0"
-libc = "0.2.175"
-crossbeam-channel = "0.5"
-anyhow = "1.0.100"
-bytes = "1.10.1"
-
-
-# OS specifice dipendenze
-[target.'cfg(target_os = "linux")'.dependencies]
-
-
-[target.'cfg(target_os = "macos")'.dependencies]
-
-
-[target.'cfg(target_os = "windows")'.dependencies]
-
+time = "0.3"
