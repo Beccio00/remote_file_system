@@ -1,5 +1,5 @@
 use fuser::{
-    FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
+    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request
 };
 use libc::ENOENT;
 use reqwest::blocking::Client;
@@ -534,5 +534,35 @@ impl Filesystem for RemoteFS {
 
         // For other attributes, just return current attributes
         self.getattr(_req, ino, reply);
+    }
+}
+
+pub fn run_linux_macos(mountpoint: &str) {
+    println!("Mounting at: {}", mountpoint);
+    println!("Press Ctrl-C to unmount and exit.");
+
+    let fs = RemoteFS::new("http://127.0.0.1:8000");
+
+    let options = vec![
+        MountOption::FSName("remote-fs".to_string()),
+        MountOption::Subtype("remote-fs".to_string()),
+        MountOption::DefaultPermissions,
+        MountOption::AllowOther,
+        MountOption::AutoUnmount
+    ];
+
+
+    match fuser::mount2(fs, mountpoint, &options) {
+        Ok(()) => {
+            println!("File system mounted successfully at {}", mountpoint);
+        }
+        Err(e) => {
+            eprintln!("Failed to mount file system: {}", e);
+            eprintln!("Make sure:");
+            eprintln!("1. macFUSE is properly installed and enabled");
+            eprintln!("2. The mount point exists and is empty");
+            eprintln!("3. You have the necessary permissions");
+            std::process::exit(1);
+        }
     }
 }
