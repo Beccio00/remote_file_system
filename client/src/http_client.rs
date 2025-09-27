@@ -17,7 +17,7 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
-    pub fn new(base_url: String, auth_token: Option<String>) -> Self {
+    pub fn new(base_url: String) -> Self {
         let client = Client::new();
         Self { base_url, client}
     }
