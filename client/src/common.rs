@@ -7,6 +7,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::io::{Read, Seek, SeekFrom, Write as IoWrite};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -17,12 +18,23 @@ pub struct RemoteEntry {
     pub size: u64,
 }
 
+/// Buffer locale per file aperti in scrittura.
+/// I dati vengono accumulati in un file temporaneo su disco
+/// e inviati al server al flush/release.
+pub struct WriteBuffer {
+    pub file: std::fs::File,
+    pub path: String,
+    pub dirty: bool,
+}
+
 pub struct RemoteFS {
     client: Client,
     base_url: String,
     inode_counter: u64,
     inode_to_path: Arc<Mutex<HashMap<u64, String>>>,
     path_to_inode: Arc<Mutex<HashMap<String, u64>>>,
+    write_buffers: HashMap<u64, WriteBuffer>,
+    fh_counter: u64,
 }
 
 impl RemoteFS {
@@ -40,6 +52,8 @@ impl RemoteFS {
             inode_counter: 1,
             inode_to_path: Arc::new(Mutex::new(inode_to_path)),
             path_to_inode: Arc::new(Mutex::new(path_to_inode)),
+            write_buffers: HashMap::new(),
+            fh_counter: 0,
         }
     }
 
@@ -233,24 +247,85 @@ impl Filesystem for RemoteFS {
         reply.ok();
     }
 
+    /// Apre un file. Se in modalità scrittura, scarica il contenuto
+    /// attuale in un file temporaneo locale che funge da buffer.
+    fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: fuser::ReplyOpen) {
+        self.fh_counter += 1;
+        let fh = self.fh_counter;
+
+        let access_mode = flags & libc::O_ACCMODE;
+        let write_mode = access_mode == libc::O_WRONLY || access_mode == libc::O_RDWR;
+        let truncate = (flags & libc::O_TRUNC) != 0;
+
+        if write_mode || truncate {
+            let i2p = self.inode_to_path.lock().unwrap();
+            let path = i2p.get(&ino).cloned();
+            drop(i2p);
+
+            if let Some(file_path) = path {
+                let mut tmp = tempfile::tempfile().unwrap();
+
+                // Pre-fill con il contenuto esistente (a meno che non sia O_TRUNC)
+                if !truncate {
+                    if let Ok(data) = self.read_file(&file_path) {
+                        let _ = tmp.write_all(&data);
+                        let _ = tmp.seek(SeekFrom::Start(0));
+                    }
+                }
+
+                self.write_buffers.insert(fh, WriteBuffer {
+                    file: tmp,
+                    path: file_path,
+                    dirty: false,
+                });
+            }
+        }
+
+        reply.opened(fh, 0);
+    }
+
+    /// Legge un file. Se c'è un buffer attivo (file aperto in scrittura),
+    /// legge dal buffer locale; altrimenti scarica dal server.
     fn read(
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        _fh: u64,
+        fh: u64,
         offset: i64,
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
+        // Se c'è un buffer di scrittura aperto, leggi da lì
+        if let Some(buf) = self.write_buffers.get_mut(&fh) {
+            if buf.file.seek(SeekFrom::Start(offset as u64)).is_err() {
+                reply.error(libc::EIO);
+                return;
+            }
+            let mut data = vec![0u8; size as usize];
+            match buf.file.read(&mut data) {
+                Ok(n) => reply.data(&data[..n]),
+                Err(_) => reply.error(libc::EIO),
+            }
+            return;
+        }
+
+        // Altrimenti, scarica dal server
         let i2p = self.inode_to_path.lock().unwrap();
-        if let Some(path) = i2p.get(&ino) {
-            match self.read_file(path) {
+        let path = i2p.get(&ino).cloned();
+        drop(i2p);
+
+        if let Some(file_path) = path {
+            match self.read_file(&file_path) {
                 Ok(data) => {
-                    let end = std::cmp::min((offset as usize) + (size as usize), data.len());
-                    let slice = &data[(offset as usize)..end];
-                    reply.data(slice);
+                    let start = offset as usize;
+                    if start >= data.len() {
+                        reply.data(&[]);
+                    } else {
+                        let end = std::cmp::min(start + size as usize, data.len());
+                        reply.data(&data[start..end]);
+                    }
                 }
                 Err(_) => reply.error(libc::ENOENT),
             }
@@ -259,6 +334,8 @@ impl Filesystem for RemoteFS {
         }
     }
 
+    /// Crea un nuovo file. Crea il file vuoto sul server e prepara
+    /// un buffer locale per le successive write.
     fn create(
         &mut self,
         _req: &Request<'_>,
@@ -279,11 +356,22 @@ impl Filesystem for RemoteFS {
             format!("{}/{}", parent_path, name.to_string_lossy())
         };
 
-        // Create empty file on server
+        // Crea file vuoto sul server
         let url = format!("{}/files/{}", self.base_url, full_path);
         match self.client.put(&url).body("").send() {
             Ok(resp) if resp.status().is_success() => {
-                let ino = self.alloc_inode(full_path);
+                let ino = self.alloc_inode(full_path.clone());
+
+                // Prepara buffer locale per le write successive
+                self.fh_counter += 1;
+                let fh = self.fh_counter;
+                let tmp = tempfile::tempfile().unwrap();
+                self.write_buffers.insert(fh, WriteBuffer {
+                    file: tmp,
+                    path: full_path,
+                    dirty: false,
+                });
+
                 let ttl = Duration::from_secs(1);
                 let attr = FileAttr {
                     ino,
@@ -302,17 +390,19 @@ impl Filesystem for RemoteFS {
                     blksize: 512,
                     flags: 0,
                 };
-                reply.created(&ttl, &attr, 0, ino, 0);
+                reply.created(&ttl, &attr, 0, fh, 0);
             }
             _ => reply.error(libc::EIO),
         }
     }
 
+    /// Scrive dati nel buffer locale alla posizione (offset) indicata.
+    /// I dati verranno caricati sul server al flush.
     fn write(
         &mut self,
         _req: &Request<'_>,
-        ino: u64,
-        _fh: u64,
+        _ino: u64,
+        fh: u64,
         offset: i64,
         data: &[u8],
         _write_flags: u32,
@@ -320,29 +410,64 @@ impl Filesystem for RemoteFS {
         _lock_owner: Option<u64>,
         reply: fuser::ReplyWrite,
     ) {
-        let i2p = self.inode_to_path.lock().unwrap();
-        let path = i2p.get(&ino).cloned();
-        drop(i2p);
+        if let Some(buf) = self.write_buffers.get_mut(&fh) {
+            if buf.file.seek(SeekFrom::Start(offset as u64)).is_err() {
+                reply.error(libc::EIO);
+                return;
+            }
+            match buf.file.write_all(data) {
+                Ok(_) => {
+                    buf.dirty = true;
+                    reply.written(data.len() as u32);
+                }
+                Err(_) => reply.error(libc::EIO),
+            }
+        } else {
+            reply.error(libc::EBADF);
+        }
+    }
 
-        if let Some(file_path) = path {
-            // For simplicity, we'll do full file replacement for now
-            // In a real implementation, you'd want to handle partial writes
-            if offset == 0 {
-                let url = format!("{}/files/{}", self.base_url, file_path);
-                match self.client.put(&url).body(data.to_vec()).send() {
+    /// Flush: legge tutto il buffer locale e lo carica sul server con PUT.
+    fn flush(&mut self, _req: &Request<'_>, _ino: u64, fh: u64, _lock_owner: u64, reply: fuser::ReplyEmpty) {
+        if let Some(buf) = self.write_buffers.get_mut(&fh) {
+            if buf.dirty {
+                let _ = buf.file.seek(SeekFrom::Start(0));
+                let mut data = Vec::new();
+                if buf.file.read_to_end(&mut data).is_err() {
+                    reply.error(libc::EIO);
+                    return;
+                }
+
+                let url = format!("{}/files/{}", self.base_url, buf.path);
+                match self.client.put(&url).body(data).send() {
                     Ok(resp) if resp.status().is_success() => {
-                        reply.written(data.len() as u32);
+                        buf.dirty = false;
+                        reply.ok();
                     }
                     _ => reply.error(libc::EIO),
                 }
             } else {
-                // For offset writes, we'd need to read, modify, write
-                // This is a simplified implementation
-                reply.error(libc::ENOSYS);
+                reply.ok();
             }
         } else {
-            reply.error(libc::ENOENT);
+            reply.ok();
         }
+    }
+
+    /// Release: chiude il file e rimuove il buffer locale.
+    /// Il file temporaneo viene eliminato automaticamente.
+    fn release(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        fh: u64,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        _flush: bool,
+        reply: fuser::ReplyEmpty,
+    ) {
+        self.write_buffers.remove(&fh);
+        reply.ok();
     }
 
     fn mkdir(
