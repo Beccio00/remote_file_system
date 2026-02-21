@@ -9,9 +9,41 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom, Write as IoWrite};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
-#[derive(Debug, Deserialize)]
+/// Configurazione della cache.
+/// - `dir_ttl`: per quanto tenere in cache i listing delle directory
+/// - `file_ttl`: per quanto tenere in cache il contenuto dei file
+/// - `max_file_cache_bytes`: dimensione massima totale della file cache
+pub struct CacheConfig {
+    pub dir_ttl: Duration,
+    pub file_ttl: Duration,
+    pub max_file_cache_bytes: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        CacheConfig {
+            dir_ttl: Duration::from_secs(5),
+            file_ttl: Duration::from_secs(10),
+            max_file_cache_bytes: 64 * 1024 * 1024, // 64 MB
+        }
+    }
+}
+
+/// Entry nella cache delle directory: lista + timestamp
+struct CachedDir {
+    entries: Vec<RemoteEntry>,
+    cached_at: Instant,
+}
+
+/// Entry nella cache dei file: bytes + timestamp
+struct CachedFile {
+    data: Vec<u8>,
+    cached_at: Instant,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct RemoteEntry {
     pub name: String,
     pub is_dir: bool,
@@ -35,10 +67,15 @@ pub struct RemoteFS {
     path_to_inode: Arc<Mutex<HashMap<String, u64>>>,
     write_buffers: HashMap<u64, WriteBuffer>,
     fh_counter: u64,
+    // Cache
+    cache_config: CacheConfig,
+    dir_cache: HashMap<String, CachedDir>,
+    file_cache: HashMap<String, CachedFile>,
+    file_cache_total_size: usize,
 }
 
 impl RemoteFS {
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str, cache_config: CacheConfig) -> Self {
         let mut inode_to_path = HashMap::new();
         let mut path_to_inode = HashMap::new();
 
@@ -54,19 +91,91 @@ impl RemoteFS {
             path_to_inode: Arc::new(Mutex::new(path_to_inode)),
             write_buffers: HashMap::new(),
             fh_counter: 0,
+            cache_config,
+            dir_cache: HashMap::new(),
+            file_cache: HashMap::new(),
+            file_cache_total_size: 0,
         }
     }
 
-    fn list_dir(&self, path: &str) -> Result<Vec<RemoteEntry>, anyhow::Error> {
+    fn list_dir(&mut self, path: &str) -> Result<Vec<RemoteEntry>, anyhow::Error> {
+        // Controlla se c'è un risultato in cache ancora valido
+        if let Some(cached) = self.dir_cache.get(path) {
+            if cached.cached_at.elapsed() < self.cache_config.dir_ttl {
+                return Ok(cached.entries.clone());
+            }
+        }
+
+        // Cache miss o scaduta → richiesta HTTP
         let url = format!("{}/list/{}", self.base_url, path);
         let resp = self.client.get(&url).send()?.error_for_status()?;
-        Ok(resp.json::<Vec<RemoteEntry>>()?)
+        let entries: Vec<RemoteEntry> = resp.json()?;
+
+        // Salva in cache
+        self.dir_cache.insert(path.to_string(), CachedDir {
+            entries: entries.clone(),
+            cached_at: Instant::now(),
+        });
+
+        Ok(entries)
     }
 
-    fn read_file(&self, path: &str) -> Result<Vec<u8>, anyhow::Error> {
+    fn read_file(&mut self, path: &str) -> Result<Vec<u8>, anyhow::Error> {
+        // Controlla se c'è un risultato in cache ancora valido
+        if let Some(cached) = self.file_cache.get(path) {
+            if cached.cached_at.elapsed() < self.cache_config.file_ttl {
+                return Ok(cached.data.clone());
+            }
+        }
+
+        // Cache miss o scaduta → richiesta HTTP
         let url = format!("{}/files/{}", self.base_url, path);
         let resp = self.client.get(&url).send()?.error_for_status()?;
-        Ok(resp.bytes()?.to_vec())
+        let data = resp.bytes()?.to_vec();
+
+        // Evict se sfora la dimensione massima (butta via i più vecchi)
+        while self.file_cache_total_size + data.len() > self.cache_config.max_file_cache_bytes {
+            if let Some(oldest_key) = self.file_cache.iter()
+                .min_by_key(|(_, v)| v.cached_at)
+                .map(|(k, _)| k.clone())
+            {
+                if let Some(evicted) = self.file_cache.remove(&oldest_key) {
+                    self.file_cache_total_size -= evicted.data.len();
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Salva in cache
+        self.file_cache_total_size += data.len();
+        self.file_cache.insert(path.to_string(), CachedFile {
+            data: data.clone(),
+            cached_at: Instant::now(),
+        });
+
+        Ok(data)
+    }
+
+    /// Invalida la cache della directory che contiene `path`
+    /// e la cache del file stesso.
+    fn invalidate_cache_for(&mut self, path: &str) {
+        // Invalida la directory padre
+        let parent = if path.contains('/') {
+            let parts: Vec<&str> = path.split('/').collect();
+            parts[..parts.len() - 1].join("/")
+        } else {
+            String::new()
+        };
+        self.dir_cache.remove(&parent);
+
+        // Invalida anche il path stesso (se è una directory o un file)
+        self.dir_cache.remove(path);
+
+        // Invalida la file cache
+        if let Some(evicted) = self.file_cache.remove(path) {
+            self.file_cache_total_size -= evicted.data.len();
+        }
     }
 
     fn alloc_inode(&mut self, path: String) -> u64 {
@@ -360,6 +469,7 @@ impl Filesystem for RemoteFS {
         let url = format!("{}/files/{}", self.base_url, full_path);
         match self.client.put(&url).body("").send() {
             Ok(resp) if resp.status().is_success() => {
+                self.invalidate_cache_for(&full_path);
                 let ino = self.alloc_inode(full_path.clone());
 
                 // Prepara buffer locale per le write successive
@@ -442,6 +552,9 @@ impl Filesystem for RemoteFS {
                 match self.client.put(&url).body(data).send() {
                     Ok(resp) if resp.status().is_success() => {
                         buf.dirty = false;
+                        // Invalida la cache per questo file
+                        let path_clone = buf.path.clone();
+                        self.invalidate_cache_for(&path_clone);
                         reply.ok();
                     }
                     _ => reply.error(libc::EIO),
@@ -492,6 +605,7 @@ impl Filesystem for RemoteFS {
         let url = format!("{}/mkdir/{}", self.base_url, full_path);
         match self.client.post(&url).send() {
             Ok(resp) if resp.status().is_success() => {
+                self.invalidate_cache_for(&full_path);
                 let ino = self.alloc_inode(full_path);
                 let ttl = Duration::from_secs(1);
                 let attr = FileAttr {
@@ -531,7 +645,8 @@ impl Filesystem for RemoteFS {
         let url = format!("{}/files/{}", self.base_url, full_path);
         match self.client.delete(&url).send() {
             Ok(resp) if resp.status().is_success() => {
-                // Remove from our cache
+                self.invalidate_cache_for(&full_path);
+                // Remove from our inode maps
                 let mut p2i = self.path_to_inode.lock().unwrap();
                 if let Some(ino) = p2i.remove(&full_path) {
                     self.inode_to_path.lock().unwrap().remove(&ino);
@@ -575,6 +690,8 @@ impl Filesystem for RemoteFS {
         };
 
         // Simple implementation: read old file, write new file, delete old
+        self.invalidate_cache_for(&old_path);
+        self.invalidate_cache_for(&new_path);
         match self.read_file(&old_path) {
             Ok(data) => {
                 let write_url = format!("{}/files/{}", self.base_url, new_path);
@@ -662,11 +779,17 @@ impl Filesystem for RemoteFS {
     }
 }
 
-pub fn run_linux_macos(mountpoint: &str) {
+pub fn run_linux_macos(mountpoint: &str, server_url: &str, cache_config: CacheConfig) {
     println!("Mounting at: {}", mountpoint);
+    println!("Server: {}", server_url);
+    println!("Cache: dir_ttl={}s, file_ttl={}s, max={}MB",
+        cache_config.dir_ttl.as_secs(),
+        cache_config.file_ttl.as_secs(),
+        cache_config.max_file_cache_bytes / 1024 / 1024,
+    );
     println!("Press Ctrl-C to unmount and exit.");
 
-    let fs = RemoteFS::new("http://127.0.0.1:8000");
+    let fs = RemoteFS::new(server_url, cache_config);
 
     let options = vec![
         MountOption::FSName("remote-fs".to_string()),
