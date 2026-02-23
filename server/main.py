@@ -78,9 +78,9 @@ async def write_file(subpath: str, request: Request):
     target = (BASE_DIR / subpath).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        body = await request.body()
         with open(target, "wb") as f:
-            f.write(body)
+            async for chunk in request.stream():
+                f.write(chunk)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Write error: {e}")
     return {"status": "ok"}

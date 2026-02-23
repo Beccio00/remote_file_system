@@ -168,7 +168,7 @@ impl RemoteFS {
         Ok(data)
     }
 
-    fn upload(&self, path: &str, data: Vec<u8>) -> Result<(), anyhow::Error> {
+    fn upload(&self, path: &str, data: impl Into<reqwest::blocking::Body>) -> Result<(), anyhow::Error> {
         let url = format!("{}/files/{}", self.base_url, path);
         self.client.put(&url).body(data).send()?.error_for_status()?;
         Ok(())
@@ -374,30 +374,40 @@ impl Filesystem for RemoteFS {
         &mut self, _req: &Request<'_>, _ino: u64, fh: u64,
         _lock: u64, reply: fuser::ReplyEmpty,
     ) {
-        // Extract data from buffer first (NLL releases the borrow after this block)
-        let upload_data = if let Some(buf) = self.write_buffers.get_mut(&fh) {
+        // Stream the tempfile directly to the server without loading into RAM
+        let upload_info = if let Some(buf) = self.write_buffers.get_mut(&fh) {
             if !buf.dirty {
                 reply.ok();
                 return;
             }
-            let _ = buf.file.seek(SeekFrom::Start(0));
-            let mut data = Vec::new();
-            if buf.file.read_to_end(&mut data).is_err() {
+            if buf.file.seek(SeekFrom::Start(0)).is_err() {
+                eprintln!("[flush] seek failed for fh={}", fh);
                 reply.error(libc::EIO);
                 return;
             }
-            buf.dirty = false;
-            Some((buf.path.clone(), data))
+            match buf.file.try_clone() {
+                Ok(file) => {
+                    buf.dirty = false;
+                    Some((buf.path.clone(), file))
+                }
+                Err(e) => {
+                    eprintln!("[flush] try_clone failed: {}", e);
+                    reply.error(libc::EIO);
+                    return;
+                }
+            }
         } else {
             None
         };
 
-        match upload_data {
-            Some((path, data)) => {
-                if self.upload(&path, data).is_ok() {
+        match upload_info {
+            Some((path, file)) => {
+                // Body::from(File) streams the file without loading it all in memory
+                if self.upload(&path, file).is_ok() {
                     self.invalidate(&path);
                     reply.ok();
                 } else {
+                    eprintln!("[flush] upload failed for path={}", path);
                     reply.error(libc::EIO);
                 }
             }
