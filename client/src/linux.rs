@@ -1,26 +1,13 @@
 use crate::Cli;
-use crate::common::{CacheConfig, run_linux_macos};
-use std::time::Duration;
+use crate::types::CacheConfig;
 
 pub fn run(cli: &Cli) {
-    println!("Starting Remote File System on Linux...");
-
-    let cache_config = if cli.no_cache {
-        CacheConfig {
-            dir_ttl: Duration::ZERO,
-            file_ttl: Duration::ZERO,
-            max_file_cache_bytes: 0,
-        }
-    } else {
-        CacheConfig {
-            dir_ttl: Duration::from_secs(cli.dir_cache_ttl),
-            file_ttl: Duration::from_secs(cli.file_cache_ttl),
-            max_file_cache_bytes: cli.max_cache_mb * 1024 * 1024,
-        }
-    };
-
-    run_linux_macos(&cli.mountpoint, &cli.server_url, cache_config);
+    let cache = CacheConfig::from_cli(
+        cli.no_cache, cli.dir_cache_ttl, cli.file_cache_ttl, cli.max_cache_mb,
+    );
+    crate::mount::run(&cli.mountpoint, &cli.server_url, cache);
 }
+
 
 
 

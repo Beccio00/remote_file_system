@@ -1,7 +1,12 @@
 use clap::Parser;
 
+mod types;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod common;
+mod remote_fs;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod mount;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -38,10 +43,30 @@ pub struct Cli {
     /// Disable caching entirely
     #[arg(long, default_value = "false")]
     pub no_cache: bool,
+
+    /// Run as a background daemon
+    #[arg(long, default_value = "false")]
+    pub daemon: bool,
 }
 
 fn main() {
     let cli = Cli::parse();
+
+    // Demonsize works only with unix systems
+    #[cfg(unix)]
+    if cli.daemon {
+        use daemonize::Daemonize;
+        let daemonize = Daemonize::new()
+            .working_directory(".")
+            .umask(0o022);
+        match daemonize.start() {
+            Ok(_) => eprintln!("Daemonized successfully (PID {})", std::process::id()),
+            Err(e) => {
+                eprintln!("Failed to daemonize: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
 
     #[cfg(target_os = "linux")]
     linux::run(&cli);

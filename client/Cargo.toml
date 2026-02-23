@@ -15,6 +15,7 @@ time = "0.3"
 [target.'cfg(unix)'.dependencies]
 fuser = { version = "0.14", features = ["abi-7-31"] }
 libc = "0.2"
+daemonize = "0.5"
 
 [target.'cfg(windows)'.dependencies]
-dokan = "0.3.1+dokan206"
+dokan = "0.3.1"

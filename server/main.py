@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from pathlib import Path
 import shutil
@@ -40,10 +40,37 @@ def list_dir(subpath: str):
     return entries
 
 @app.get("/files/{subpath:path}")
-def read_file(subpath: str):
+def read_file(subpath: str, range: str = Header(None)):
     target = (BASE_DIR / subpath).resolve()
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
+
+    file_size = target.stat().st_size
+
+    # Support Range requests for streaming large files
+    if range and range.startswith("bytes="):
+        range_spec = range[6:]
+        start_str, end_str = range_spec.split("-", 1)
+        start = int(start_str) if start_str else 0
+        end = int(end_str) if end_str else file_size - 1
+        end = min(end, file_size - 1)
+        length = end - start + 1
+
+        with open(target, "rb") as f:
+            f.seek(start)
+            data = f.read(length)
+
+        return Response(
+            content=data,
+            status_code=206,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Content-Length": str(length),
+                "Accept-Ranges": "bytes",
+            },
+            media_type="application/octet-stream",
+        )
+
     return FileResponse(target)
 
 @app.put("/files/{subpath:path}")
