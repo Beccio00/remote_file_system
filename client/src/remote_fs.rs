@@ -68,7 +68,10 @@ impl RemoteFS {
         path_to_inode.insert(String::new(), 1);
 
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(None)
+                .build()
+                .expect("failed to build HTTP client"),
             base_url: base_url.to_string(),
             inode_counter: 1,
             inode_to_path: Arc::new(Mutex::new(inode_to_path)),
@@ -168,7 +171,7 @@ impl RemoteFS {
         Ok(data)
     }
 
-    fn upload(&self, path: &str, data: impl Into<reqwest::blocking::Body>) -> Result<(), anyhow::Error> {
+    fn upload(&self, path: &str, data: Vec<u8>) -> Result<(), anyhow::Error> {
         let url = format!("{}/files/{}", self.base_url, path);
         self.client.put(&url).body(data).send()?.error_for_status()?;
         Ok(())
@@ -335,6 +338,7 @@ impl Filesystem for RemoteFS {
     ) {
         let (_, full_path) = self.child_path(parent, name);
 
+        eprintln!("[create] path={}", full_path);
         match self.upload(&full_path, Vec::new()) {
             Ok(_) => {
                 self.invalidate(&full_path);
@@ -342,9 +346,10 @@ impl Filesystem for RemoteFS {
                 let fh = self.next_fh();
                 let tmp = tempfile::tempfile().unwrap();
                 self.write_buffers.insert(fh, WriteBuffer { file: tmp, path: full_path, dirty: false });
+                eprintln!("[create] ok fh={}", fh);
                 reply.created(&TTL, &make_attr(ino, 0, FileType::RegularFile), 0, fh, 0);
             }
-            Err(_) => reply.error(libc::EIO),
+            Err(e) => { eprintln!("[create] FAILED: {}", e); reply.error(libc::EIO); }
         }
     }
 
@@ -355,17 +360,23 @@ impl Filesystem for RemoteFS {
     ) {
         if let Some(buf) = self.write_buffers.get_mut(&fh) {
             if buf.file.seek(SeekFrom::Start(offset as u64)).is_err() {
+                eprintln!("[write] seek failed fh={} offset={}", fh, offset);
                 reply.error(libc::EIO);
                 return;
             }
             match buf.file.write_all(data) {
                 Ok(_) => {
                     buf.dirty = true;
+                    // Log progress every 10MB
+                    if offset % (10 * 1024 * 1024) == 0 {
+                        eprintln!("[write] fh={} offset={}MB len={}", fh, offset / 1024 / 1024, data.len());
+                    }
                     reply.written(data.len() as u32);
                 }
-                Err(_) => reply.error(libc::EIO),
+                Err(e) => { eprintln!("[write] write_all failed: {}", e); reply.error(libc::EIO); }
             }
         } else {
+            eprintln!("[write] no buffer for fh={}", fh);
             reply.error(libc::EBADF);
         }
     }
@@ -374,41 +385,42 @@ impl Filesystem for RemoteFS {
         &mut self, _req: &Request<'_>, _ino: u64, fh: u64,
         _lock: u64, reply: fuser::ReplyEmpty,
     ) {
-        // Stream the tempfile directly to the server without loading into RAM
-        let upload_info = if let Some(buf) = self.write_buffers.get_mut(&fh) {
+        eprintln!("[flush] called fh={}", fh);
+        let upload_data = if let Some(buf) = self.write_buffers.get_mut(&fh) {
             if !buf.dirty {
+                eprintln!("[flush] fh={} not dirty, skipping", fh);
                 reply.ok();
                 return;
             }
-            if buf.file.seek(SeekFrom::Start(0)).is_err() {
-                eprintln!("[flush] seek failed for fh={}", fh);
-                reply.error(libc::EIO);
-                return;
-            }
-            match buf.file.try_clone() {
-                Ok(file) => {
-                    buf.dirty = false;
-                    Some((buf.path.clone(), file))
-                }
+            let _ = buf.file.seek(SeekFrom::Start(0));
+            let mut data = Vec::new();
+            match buf.file.read_to_end(&mut data) {
+                Ok(_) => eprintln!("[flush] fh={} read {} bytes from tempfile", fh, data.len()),
                 Err(e) => {
-                    eprintln!("[flush] try_clone failed: {}", e);
+                    eprintln!("[flush] fh={} read_to_end FAILED: {}", fh, e);
                     reply.error(libc::EIO);
                     return;
                 }
             }
+            buf.dirty = false;
+            Some((buf.path.clone(), data))
         } else {
             None
         };
 
-        match upload_info {
-            Some((path, file)) => {
-                // Body::from(File) streams the file without loading it all in memory
-                if self.upload(&path, file).is_ok() {
-                    self.invalidate(&path);
-                    reply.ok();
-                } else {
-                    eprintln!("[flush] upload failed for path={}", path);
-                    reply.error(libc::EIO);
+        match upload_data {
+            Some((path, ref data)) => {
+                eprintln!("[flush] uploading path={} size={}MB", path, data.len() / 1024 / 1024);
+                match self.upload(&path, data.to_vec()) {
+                    Ok(_) => {
+                        eprintln!("[flush] upload OK path={}", path);
+                        self.invalidate(&path);
+                        reply.ok();
+                    }
+                    Err(e) => {
+                        eprintln!("[flush] upload FAILED path={}: {}", path, e);
+                        reply.error(libc::EIO);
+                    }
                 }
             }
             None => reply.ok(),
