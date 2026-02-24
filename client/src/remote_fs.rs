@@ -25,6 +25,38 @@ struct WriteBuffer {
     dirty: bool,
 }
 
+struct ProgressReader<R: Read> {
+    inner: R,
+    total: u64,
+    sent: u64,
+    name: String,
+    last_pct: u64,
+}
+
+impl<R: Read> Read for ProgressReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.sent += n as u64;
+        let pct = if self.total > 0 { self.sent * 100 / self.total } else { 100 };
+        if pct != self.last_pct {
+            self.last_pct = pct;
+            let filled = (pct as usize * 30) / 100;
+            eprint!("\r\x1b[K  {} [{}>{} ] {}% ({}/{}MB)",
+                self.name,
+                "=".repeat(filled),
+                " ".repeat(30 - filled),
+                pct,
+                self.sent / (1024 * 1024),
+                self.total / (1024 * 1024),
+            );
+        }
+        if n == 0 && self.sent >= self.total {
+            eprintln!(" done");
+        }
+        Ok(n)
+    }
+}
+
 fn make_attr(ino: u64, size: u64, kind: FileType) -> FileAttr {
     let now = SystemTime::now();
     FileAttr {
@@ -338,7 +370,6 @@ impl Filesystem for RemoteFS {
     ) {
         let (_, full_path) = self.child_path(parent, name);
 
-        eprintln!("[create] path={}", full_path);
         match self.upload(&full_path, Vec::new()) {
             Ok(_) => {
                 self.invalidate(&full_path);
@@ -346,10 +377,9 @@ impl Filesystem for RemoteFS {
                 let fh = self.next_fh();
                 let tmp = tempfile::tempfile().unwrap();
                 self.write_buffers.insert(fh, WriteBuffer { file: tmp, path: full_path, dirty: false });
-                eprintln!("[create] ok fh={}", fh);
                 reply.created(&TTL, &make_attr(ino, 0, FileType::RegularFile), 0, fh, 0);
             }
-            Err(e) => { eprintln!("[create] FAILED: {}", e); reply.error(libc::EIO); }
+            Err(e) => { eprintln!("create failed {}: {}", full_path, e); reply.error(libc::EIO); }
         }
     }
 
@@ -360,23 +390,17 @@ impl Filesystem for RemoteFS {
     ) {
         if let Some(buf) = self.write_buffers.get_mut(&fh) {
             if buf.file.seek(SeekFrom::Start(offset as u64)).is_err() {
-                eprintln!("[write] seek failed fh={} offset={}", fh, offset);
                 reply.error(libc::EIO);
                 return;
             }
             match buf.file.write_all(data) {
                 Ok(_) => {
                     buf.dirty = true;
-                    // Log progress every 10MB
-                    if offset % (10 * 1024 * 1024) == 0 {
-                        eprintln!("[write] fh={} offset={}MB len={}", fh, offset / 1024 / 1024, data.len());
-                    }
                     reply.written(data.len() as u32);
                 }
-                Err(e) => { eprintln!("[write] write_all failed: {}", e); reply.error(libc::EIO); }
+                Err(_) => reply.error(libc::EIO),
             }
         } else {
-            eprintln!("[write] no buffer for fh={}", fh);
             reply.error(libc::EBADF);
         }
     }
@@ -385,45 +409,50 @@ impl Filesystem for RemoteFS {
         &mut self, _req: &Request<'_>, _ino: u64, fh: u64,
         _lock: u64, reply: fuser::ReplyEmpty,
     ) {
-        eprintln!("[flush] called fh={}", fh);
-        let upload_data = if let Some(buf) = self.write_buffers.get_mut(&fh) {
+        let upload_info = if let Some(buf) = self.write_buffers.get_mut(&fh) {
             if !buf.dirty {
-                eprintln!("[flush] fh={} not dirty, skipping", fh);
                 reply.ok();
                 return;
             }
-            let _ = buf.file.seek(SeekFrom::Start(0));
-            let mut data = Vec::new();
-            match buf.file.read_to_end(&mut data) {
-                Ok(_) => eprintln!("[flush] fh={} read {} bytes from tempfile", fh, data.len()),
-                Err(e) => {
-                    eprintln!("[flush] fh={} read_to_end FAILED: {}", fh, e);
+            if buf.file.seek(SeekFrom::Start(0)).is_err() {
+                reply.error(libc::EIO);
+                return;
+            }
+            let size = buf.file.metadata().map(|m| m.len()).unwrap_or(0);
+            match buf.file.try_clone() {
+                Ok(file) => {
+                    buf.dirty = false;
+                    Some((buf.path.clone(), file, size))
+                }
+                Err(_) => {
                     reply.error(libc::EIO);
                     return;
                 }
             }
-            buf.dirty = false;
-            Some((buf.path.clone(), data))
         } else {
-            None
+            reply.ok();
+            return;
         };
 
-        match upload_data {
-            Some((path, ref data)) => {
-                eprintln!("[flush] uploading path={} size={}MB", path, data.len() / 1024 / 1024);
-                match self.upload(&path, data.to_vec()) {
-                    Ok(_) => {
-                        eprintln!("[flush] upload OK path={}", path);
-                        self.invalidate(&path);
-                        reply.ok();
-                    }
-                    Err(e) => {
-                        eprintln!("[flush] upload FAILED path={}: {}", path, e);
-                        reply.error(libc::EIO);
-                    }
+        if let Some((path, file, size)) = upload_info {
+            let name = path.split('/').last().unwrap_or(&path).to_string();
+            let reader = ProgressReader {
+                inner: file, total: size, sent: 0,
+                name: name.clone(), last_pct: u64::MAX,
+            };
+            let body = reqwest::blocking::Body::sized(reader, size);
+            let url = format!("{}/files/{}", self.base_url, path);
+
+            match self.client.put(&url).body(body).send().and_then(|r| r.error_for_status()) {
+                Ok(_) => {
+                    self.invalidate(&path);
+                    reply.ok();
+                }
+                Err(e) => {
+                    eprintln!("\n  ✗ upload failed {}: {}", name, e);
+                    reply.error(libc::EIO);
                 }
             }
-            None => reply.ok(),
         }
     }
 
