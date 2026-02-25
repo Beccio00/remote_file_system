@@ -1,6 +1,7 @@
 use clap::Parser;
 
 mod types;
+mod remote_client;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod remote_fs;
@@ -52,7 +53,7 @@ pub struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    // Demonsize works only with unix systems
+    // Daemonize works only with unix systems
     #[cfg(unix)]
     if cli.daemon {
         use daemonize::Daemonize;
@@ -75,5 +76,5 @@ fn main() {
     macos::run(&cli);
 
     #[cfg(target_os = "windows")]
-    windows::run();
+    windows::run(&cli);
 }

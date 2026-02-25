@@ -1,60 +1,18 @@
 use crate::types::{CacheConfig, RemoteEntry, join_path, parent_of};
+use crate::remote_client::{RemoteClient, ProgressReader};
 use fuser::{FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request};
-use reqwest::blocking::Client;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom, Write as IoWrite};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 const TTL: Duration = Duration::from_secs(1);
-
-struct CachedDir {
-    entries: Vec<RemoteEntry>,
-    cached_at: Instant,
-}
-
-struct CachedFile {
-    data: Vec<u8>,
-    cached_at: Instant,
-}
 
 struct WriteBuffer {
     file: std::fs::File,
     path: String,
     dirty: bool,
-}
-
-struct ProgressReader<R: Read> {
-    inner: R,
-    total: u64,
-    sent: u64,
-    name: String,
-    last_pct: u64,
-}
-
-impl<R: Read> Read for ProgressReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        self.sent += n as u64;
-        let pct = if self.total > 0 { self.sent * 100 / self.total } else { 100 };
-        if pct != self.last_pct {
-            self.last_pct = pct;
-            let filled = (pct as usize * 30) / 100;
-            eprint!("\r\x1b[K  {} [{}>{} ] {}% ({}/{}MB)",
-                self.name,
-                "=".repeat(filled),
-                " ".repeat(30 - filled),
-                pct,
-                self.sent / (1024 * 1024),
-                self.total / (1024 * 1024),
-            );
-        }
-        if n == 0 && self.sent >= self.total {
-            eprintln!(" done");
-        }
-        Ok(n)
-    }
 }
 
 fn make_attr(ino: u64, size: u64, kind: FileType) -> FileAttr {
@@ -79,17 +37,12 @@ fn make_attr(ino: u64, size: u64, kind: FileType) -> FileAttr {
 }
 
 pub struct RemoteFS {
-    client: Client,
-    base_url: String,
+    rc: RemoteClient,
     inode_counter: u64,
     inode_to_path: Arc<Mutex<HashMap<u64, String>>>,
     path_to_inode: Arc<Mutex<HashMap<String, u64>>>,
     write_buffers: HashMap<u64, WriteBuffer>,
     fh_counter: u64,
-    cache_config: CacheConfig,
-    dir_cache: HashMap<String, CachedDir>,
-    file_cache: HashMap<String, CachedFile>,
-    file_cache_size: usize,
 }
 
 impl RemoteFS {
@@ -100,20 +53,12 @@ impl RemoteFS {
         path_to_inode.insert(String::new(), 1);
 
         Self {
-            client: Client::builder()
-                .timeout(None)
-                .build()
-                .expect("failed to build HTTP client"),
-            base_url: base_url.to_string(),
+            rc: RemoteClient::new(base_url, cache_config),
             inode_counter: 1,
             inode_to_path: Arc::new(Mutex::new(inode_to_path)),
             path_to_inode: Arc::new(Mutex::new(path_to_inode)),
             write_buffers: HashMap::new(),
             fh_counter: 0,
-            cache_config,
-            dir_cache: HashMap::new(),
-            file_cache: HashMap::new(),
-            file_cache_size: 0,
         }
     }
 
@@ -152,93 +97,6 @@ impl RemoteFS {
         self.fh_counter += 1;
         self.fh_counter
     }
-
-    fn list_dir(&mut self, path: &str) -> Result<Vec<RemoteEntry>, anyhow::Error> {
-        if let Some(cached) = self.dir_cache.get(path) {
-            if cached.cached_at.elapsed() < self.cache_config.dir_ttl {
-                return Ok(cached.entries.clone());
-            }
-        }
-
-        let url = format!("{}/list/{}", self.base_url, path);
-        let entries: Vec<RemoteEntry> = self.client.get(&url).send()?.error_for_status()?.json()?;
-
-        self.dir_cache.insert(path.to_string(), CachedDir {
-            entries: entries.clone(),
-            cached_at: Instant::now(),
-        });
-        Ok(entries)
-    }
-
-    fn fetch_file(&mut self, path: &str) -> Result<Vec<u8>, anyhow::Error> {
-        if let Some(cached) = self.file_cache.get(path) {
-            if cached.cached_at.elapsed() < self.cache_config.file_ttl {
-                return Ok(cached.data.clone());
-            }
-        }
-
-        let url = format!("{}/files/{}", self.base_url, path);
-        let data = self.client.get(&url).send()?.error_for_status()?.bytes()?.to_vec();
-
-        // Evict oldest entries if over budget
-        while self.file_cache_size + data.len() > self.cache_config.max_file_cache_bytes {
-            let oldest = self.file_cache.iter()
-                .min_by_key(|(_, v)| v.cached_at)
-                .map(|(k, _)| k.clone());
-            match oldest {
-                Some(key) => {
-                    if let Some(evicted) = self.file_cache.remove(&key) {
-                        self.file_cache_size -= evicted.data.len();
-                    }
-                }
-                None => break,
-            }
-        }
-
-        self.file_cache_size += data.len();
-        self.file_cache.insert(path.to_string(), CachedFile {
-            data: data.clone(),
-            cached_at: Instant::now(),
-        });
-        Ok(data)
-    }
-
-    fn upload(&self, path: &str, data: Vec<u8>) -> Result<(), anyhow::Error> {
-        let url = format!("{}/files/{}", self.base_url, path);
-        self.client.put(&url).body(data).send()?.error_for_status()?;
-        Ok(())
-    }
-
-    fn delete_remote(&self, path: &str) -> Result<(), anyhow::Error> {
-        let url = format!("{}/files/{}", self.base_url, path);
-        self.client.delete(&url).send()?.error_for_status()?;
-        Ok(())
-    }
-
-    fn mkdir_remote(&self, path: &str) -> Result<(), anyhow::Error> {
-        let url = format!("{}/mkdir/{}", self.base_url, path);
-        self.client.post(&url).send()?.error_for_status()?;
-        Ok(())
-    }
-
-    fn invalidate(&mut self, path: &str) {
-        self.dir_cache.remove(&parent_of(path));
-        self.dir_cache.remove(path);
-        if let Some(evicted) = self.file_cache.remove(path) {
-            self.file_cache_size -= evicted.data.len();
-        }
-    }
-
-    fn fetch_range(&self, path: &str, offset: u64, size: u32) -> Result<Vec<u8>, anyhow::Error> {
-        let url = format!("{}/files/{}", self.base_url, path);
-        let end = offset + (size as u64) - 1;
-        let range_header = format!("bytes={}-{}", offset, end);
-        let resp = self.client.get(&url)
-            .header("Range", range_header)
-            .send()?
-            .error_for_status()?;
-        Ok(resp.bytes()?.to_vec())
-    }
 }
 
 
@@ -247,7 +105,7 @@ impl Filesystem for RemoteFS {
         let (parent_path, full_path) = self.child_path(parent, name);
         let name_str = name.to_string_lossy();
 
-        if let Ok(entries) = self.list_dir(&parent_path) {
+        if let Ok(entries) = self.rc.list_dir(&parent_path) {
             if let Some(entry) = entries.iter().find(|e| e.name == *name_str) {
                 let ino = self.alloc_inode(full_path);
                 let kind = if entry.is_dir { FileType::Directory } else { FileType::RegularFile };
@@ -268,7 +126,7 @@ impl Filesystem for RemoteFS {
             let parent = parent_of(&path);
             let filename = path.split('/').last().unwrap_or("");
 
-            if let Ok(entries) = self.list_dir(&parent) {
+            if let Ok(entries) = self.rc.list_dir(&parent) {
                 if let Some(entry) = entries.iter().find(|e| e.name == filename) {
                     let kind = if entry.is_dir { FileType::Directory } else { FileType::RegularFile };
                     reply.attr(&TTL, &make_attr(ino, entry.size, kind));
@@ -289,7 +147,7 @@ impl Filesystem for RemoteFS {
             let _ = reply.add(ino, 1, FileType::Directory, ".");
             let _ = reply.add(ino, 2, FileType::Directory, "..");
 
-            if let Ok(entries) = self.list_dir(&parent_path) {
+            if let Ok(entries) = self.rc.list_dir(&parent_path) {
                 for (i, entry) in entries.iter().enumerate() {
                     let child = join_path(&parent_path, &entry.name);
                     let child_ino = self.alloc_inode(child);
@@ -313,7 +171,7 @@ impl Filesystem for RemoteFS {
             if let Some(path) = self.inode_path(ino) {
                 let mut tmp = tempfile::tempfile().unwrap();
                 if !truncate {
-                    if let Ok(data) = self.fetch_file(&path) {
+                    if let Ok(data) = self.rc.fetch_file(&path) {
                         let _ = tmp.write_all(&data);
                         let _ = tmp.seek(SeekFrom::Start(0));
                     }
@@ -348,17 +206,15 @@ impl Filesystem for RemoteFS {
         };
 
         // If the file is in cache, serve from there
-        if let Some(cached) = self.file_cache.get(&path) {
-            if cached.cached_at.elapsed() < self.cache_config.file_ttl {
-                let start = offset as usize;
-                let end = std::cmp::min(start + size as usize, cached.data.len());
-                reply.data(if start >= cached.data.len() { &[] } else { &cached.data[start..end] });
-                return;
-            }
+        if let Some(cached) = self.rc.cached_file_data(&path) {
+            let start = offset as usize;
+            let end = std::cmp::min(start + size as usize, cached.len());
+            reply.data(if start >= cached.len() { &[] } else { &cached[start..end] });
+            return;
         }
 
         // No cache hit → use Range request (only fetch the bytes we need)
-        match self.fetch_range(&path, offset as u64, size) {
+        match self.rc.fetch_range(&path, offset as u64, size) {
             Ok(data) => reply.data(&data),
             Err(_) => reply.error(libc::ENOENT),
         }
@@ -370,9 +226,9 @@ impl Filesystem for RemoteFS {
     ) {
         let (_, full_path) = self.child_path(parent, name);
 
-        match self.upload(&full_path, Vec::new()) {
+        match self.rc.upload(&full_path, Vec::new()) {
             Ok(_) => {
-                self.invalidate(&full_path);
+                self.rc.invalidate(&full_path);
                 let ino = self.alloc_inode(full_path.clone());
                 let fh = self.next_fh();
                 let tmp = tempfile::tempfile().unwrap();
@@ -440,12 +296,9 @@ impl Filesystem for RemoteFS {
                 inner: file, total: size, sent: 0,
                 name: name.clone(), last_pct: u64::MAX,
             };
-            let body = reqwest::blocking::Body::sized(reader, size);
-            let url = format!("{}/files/{}", self.base_url, path);
-
-            match self.client.put(&url).body(body).send().and_then(|r| r.error_for_status()) {
+            match self.rc.upload_streamed(&path, reader, size) {
                 Ok(_) => {
-                    self.invalidate(&path);
+                    self.rc.invalidate(&path);
                     reply.ok();
                 }
                 Err(e) => {
@@ -470,9 +323,9 @@ impl Filesystem for RemoteFS {
     ) {
         let (_, full_path) = self.child_path(parent, name);
 
-        match self.mkdir_remote(&full_path) {
+        match self.rc.mkdir_remote(&full_path) {
             Ok(_) => {
-                self.invalidate(&full_path);
+                self.rc.invalidate(&full_path);
                 let ino = self.alloc_inode(full_path);
                 reply.entry(&TTL, &make_attr(ino, 0, FileType::Directory), 0);
             }
@@ -483,9 +336,9 @@ impl Filesystem for RemoteFS {
     fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
         let (_, full_path) = self.child_path(parent, name);
 
-        match self.delete_remote(&full_path) {
+        match self.rc.delete_remote(&full_path) {
             Ok(_) => {
-                self.invalidate(&full_path);
+                self.rc.invalidate(&full_path);
                 self.remove_inode(&full_path);
                 reply.ok();
             }
@@ -504,19 +357,19 @@ impl Filesystem for RemoteFS {
         let (_, old_path) = self.child_path(parent, name);
         let (_, new_path) = self.child_path(newparent, newname);
 
-        self.invalidate(&old_path);
-        self.invalidate(&new_path);
+        self.rc.invalidate(&old_path);
+        self.rc.invalidate(&new_path);
 
-        let data = match self.fetch_file(&old_path) {
+        let data = match self.rc.fetch_file(&old_path) {
             Ok(d) => d,
             Err(_) => { reply.error(libc::EIO); return; }
         };
 
-        if self.upload(&new_path, data).is_err() {
+        if self.rc.upload(&new_path, data).is_err() {
             reply.error(libc::EIO);
             return;
         }
-        if self.delete_remote(&old_path).is_err() {
+        if self.rc.delete_remote(&old_path).is_err() {
             reply.error(libc::EIO);
             return;
         }
@@ -544,8 +397,8 @@ impl Filesystem for RemoteFS {
         // Handle truncation to zero
         if let Some(0) = size {
             if let Some(path) = self.inode_path(ino) {
-                if self.upload(&path, Vec::new()).is_ok() {
-                    self.invalidate(&path);
+                if self.rc.upload(&path, Vec::new()).is_ok() {
+                    self.rc.invalidate(&path);
                     reply.attr(&TTL, &make_attr(ino, 0, FileType::RegularFile));
                     return;
                 }

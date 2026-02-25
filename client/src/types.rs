@@ -42,6 +42,7 @@ impl CacheConfig {
     }
 }
 
+#[allow(dead_code)]
 pub fn join_path(parent: &str, name: &str) -> String {
     if parent.is_empty() {
         name.to_string()
