@@ -16,6 +16,12 @@ mod linux;
 mod macos;
 
 #[cfg(target_os = "windows")]
+mod remote_win_fs;
+
+#[cfg(target_os = "windows")]
+mod mount_win;
+
+#[cfg(target_os = "windows")]
 mod windows;
 
 /// Remote File System — mount a remote filesystem via FUSE
