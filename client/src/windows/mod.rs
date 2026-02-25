@@ -1,7 +1,8 @@
+mod remote_fs;
+mod mount;
+
 use crate::types::CacheConfig;
 use crate::Cli;
-
-
 
 pub fn run(cli: &Cli) {
     let cache = CacheConfig::from_cli(
@@ -10,6 +11,5 @@ pub fn run(cli: &Cli) {
         cli.file_cache_ttl,
         cli.max_cache_mb,
     );
-    crate::mount_win::run(&cli.mountpoint, &cli.server_url, cache);
+    mount::run(&cli.mountpoint, &cli.server_url, cache);
 }
-

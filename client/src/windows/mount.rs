@@ -1,7 +1,4 @@
-//! Windows WinFSP mount setup.
-//! Mirrors mount.rs (FUSE) but uses the WinFSP FileSystemHost API.
-
-use crate::remote_win_fs::RemoteWinFS;
+use super::remote_fs::RemoteFS;
 use crate::types::CacheConfig;
 use winfsp::host::{FileSystemHost, VolumeParams};
 
@@ -17,7 +14,7 @@ pub fn run(mountpoint: &str, server_url: &str, cache: CacheConfig) {
 
     let _init = winfsp::winfsp_init_or_die();
 
-    let ctx = RemoteWinFS::new(server_url, cache);
+    let ctx = RemoteFS::new(server_url, cache);
 
     let mut params = VolumeParams::new();
     params

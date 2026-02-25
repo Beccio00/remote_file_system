@@ -1,4 +1,4 @@
-use crate::remote_fs::RemoteFS;
+use super::remote_fs::RemoteFS;
 use crate::types::CacheConfig;
 use fuser::MountOption;
 

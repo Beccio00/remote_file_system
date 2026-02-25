@@ -33,7 +33,7 @@ fn make_attr(ino: u64, size: u64, kind: FileType) -> FileAttr {
         rdev: 0,
         blksize: 512,
         flags: 0,
-    }
+    } 
 }
 
 pub struct RemoteFS {

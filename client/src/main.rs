@@ -3,25 +3,10 @@ use clap::Parser;
 mod types;
 mod remote_client;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod remote_fs;
+#[cfg(unix)]
+mod unix;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod mount;
-
-#[cfg(target_os = "linux")]
-mod linux;
-
-#[cfg(target_os = "macos")]
-mod macos;
-
-#[cfg(target_os = "windows")]
-mod remote_win_fs;
-
-#[cfg(target_os = "windows")]
-mod mount_win;
-
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 mod windows;
 
 /// Remote File System — mount a remote filesystem via FUSE
@@ -51,6 +36,7 @@ pub struct Cli {
     #[arg(long, default_value = "false")]
     pub no_cache: bool,
 
+    #[cfg(unix)]
     /// Run as a background daemon
     #[arg(long, default_value = "false")]
     pub daemon: bool,
@@ -75,12 +61,9 @@ fn main() {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    linux::run(&cli);
+    #[cfg(unix)]
+    unix::run(&cli);
 
-    #[cfg(target_os = "macos")]
-    macos::run(&cli);
-
-    #[cfg(target_os = "windows")]
+    #[cfg(windows)]
     windows::run(&cli);
 }

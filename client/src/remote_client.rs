@@ -47,8 +47,6 @@ impl<R: Read> Read for ProgressReader<R> {
     }
 }
 
-/// Cross-platform HTTP client that communicates with the remote file server.
-/// Handles caching (directory listings + file contents).
 pub struct RemoteClient {
     client: Client,
     base_url: String,
@@ -110,7 +108,6 @@ impl RemoteClient {
         let url = format!("{}/files/{}", self.base_url, path);
         let data = self.client.get(&url).send()?.error_for_status()?.bytes()?.to_vec();
 
-        // Evict oldest entries if over budget
         while self.file_cache_size + data.len() > self.cache_config.max_file_cache_bytes {
             let oldest = self.file_cache.iter()
                 .min_by_key(|(_, v)| v.cached_at)
@@ -178,7 +175,6 @@ impl RemoteClient {
         }
     }
 
-    /// Check if a file is in the cache and still valid, return cached data slice.
     pub fn cached_file_data(&self, path: &str) -> Option<&[u8]> {
         if let Some(cached) = self.file_cache.get(path) {
             if cached.cached_at.elapsed() < self.cache_config.file_ttl {

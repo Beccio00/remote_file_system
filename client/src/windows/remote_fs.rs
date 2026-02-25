@@ -1,5 +1,5 @@
 //! Windows WinFSP filesystem implementation.
-//! Mirrors remote_fs.rs (FUSE) but uses the WinFSP FileSystemContext API.
+//! Mirrors unix/remote_fs.rs (FUSE) but uses the WinFSP FileSystemContext API.
 
 use crate::remote_client::RemoteClient;
 use crate::types::{CacheConfig, RemoteEntry, parent_of};
@@ -24,7 +24,6 @@ fn nt(code: i32) -> winfsp::FspError {
     winfsp::FspError::NTSTATUS(code)
 }
 
-// ── Internal helpers ─────────────────────────────────────────────
 
 /// Convert a WinFSP wide path `\foo\bar` to the internal `foo/bar` form.
 fn wide_to_path(name: &U16CStr) -> String {
@@ -48,7 +47,7 @@ fn filetime_now() -> u64 {
     EPOCH_DIFF + (dur.as_nanos() / 100) as u64
 }
 
-pub(crate) fn make_file_info(is_dir: bool, size: u64) -> FileInfo {
+pub(super) fn make_file_info(is_dir: bool, size: u64) -> FileInfo {
     let now = filetime_now();
     FileInfo {
         file_attributes: if is_dir {
@@ -66,9 +65,8 @@ pub(crate) fn make_file_info(is_dir: bool, size: u64) -> FileInfo {
     }
 }
 
-// ── Per-handle file context ──────────────────────────────────────
 /// Holds state for a single open file handle.
-/// Equivalent to WriteBuffer in remote_fs.rs.
+/// Equivalent to WriteBuffer in unix/remote_fs.rs.
 pub struct FileCtx {
     pub path: String,
     pub is_dir: bool,
@@ -79,11 +77,11 @@ pub struct FileCtx {
 // ── Filesystem context ───────────────────────────────────────────
 /// The WinFSP filesystem implementation.
 /// Mirrors RemoteFS (FUSE) but implements FileSystemContext instead.
-pub struct RemoteWinFS {
+pub struct RemoteFS {
     rc: Mutex<RemoteClient>,
 }
 
-impl RemoteWinFS {
+impl RemoteFS {
     pub fn new(base_url: &str, cache: CacheConfig) -> Self {
         Self {
             rc: Mutex::new(RemoteClient::new(base_url, cache)),
@@ -112,7 +110,7 @@ impl RemoteWinFS {
 }
 
 // ── FileSystemContext implementation ─────────────────────────────
-impl FileSystemContext for RemoteWinFS {
+impl FileSystemContext for RemoteFS {
     type FileContext = FileCtx;
 
     fn get_security_by_name(
@@ -122,17 +120,14 @@ impl FileSystemContext for RemoteWinFS {
         resolve: impl FnOnce(&U16CStr) -> Option<FileSecurity>,
     ) -> winfsp::Result<FileSecurity> {
         let path = wide_to_path(file_name);
-        // Verify the path exists on the remote side first.
         let _entry = self
             .stat(&path)
             .ok_or_else(|| nt(STATUS_OBJECT_NAME_NOT_FOUND))?;
 
-        // Delegate security descriptor construction to WinFSP.
-        if let Some(fs) = resolve(file_name) {
+            if let Some(fs) = resolve(file_name) {
             return Ok(fs);
         }
 
-        // Safe fallback (should not normally be reached).
         Ok(FileSecurity {
             attributes: FILE_ATTRIBUTE_DIRECTORY,
             reparse: false,
@@ -240,7 +235,6 @@ impl FileSystemContext for RemoteWinFS {
         buffer: &mut [u8],
         offset: u64,
     ) -> winfsp::Result<u32> {
-        // Serve from the open write buffer if available.
         if let Some(ref wb) = context.write_buf {
             let mut f = wb.try_clone().map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
             f.seek(SeekFrom::Start(offset))
@@ -251,7 +245,6 @@ impl FileSystemContext for RemoteWinFS {
 
         let rc = self.rc.lock().unwrap();
 
-        // Serve from the file cache if still valid.
         if let Some(cached) = rc.cached_file_data(&context.path) {
             let start = offset as usize;
             if start >= cached.len() {
@@ -262,7 +255,6 @@ impl FileSystemContext for RemoteWinFS {
             return Ok((end - start) as u32);
         }
 
-        // Fall back to a ranged HTTP request for only the bytes needed.
         let data = rc
             .fetch_range(&context.path, offset, buffer.len() as u32)
             .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
@@ -355,7 +347,6 @@ impl FileSystemContext for RemoteWinFS {
         _file_name: Option<&U16CStr>,
         flags: u32,
     ) {
-        // Flag 0x01 = FspCleanupDelete: the file was deleted.
         if flags & 0x01 != 0 {
             let mut rc = self.rc.lock().unwrap();
             let _ = rc.delete_remote(&context.path);
@@ -363,7 +354,6 @@ impl FileSystemContext for RemoteWinFS {
             return;
         }
 
-        // Flush write buffer to the server on close.
         if let Some(ref wb) = context.write_buf {
             if let Ok(mut f) = wb.try_clone() {
                 if f.seek(SeekFrom::Start(0)).is_ok() {
