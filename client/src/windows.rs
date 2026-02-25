@@ -58,26 +58,7 @@ fn make_file_info(is_dir: bool, size: u64) -> FileInfo {
     }
 }
 
-/// Minimal self-relative security descriptor granting Everyone full access.
-fn default_security_descriptor() -> Vec<u8> {
-    vec![
-        0x01, 0x00, 0x04, 0x80, // revision, align, control
-        0x00, 0x00, 0x00, 0x00, // owner (none)
-        0x00, 0x00, 0x00, 0x00, // group (none)
-        0x00, 0x00, 0x00, 0x00, // SACL (none)
-        0x14, 0x00, 0x00, 0x00, // DACL offset = 20
-        // DACL header
-        0x02, 0x00, // revision
-        0x1C, 0x00, // size = 28
-        0x01, 0x00, // ACE count
-        0x00, 0x00, // padding
-        // ACE: Allow Everyone (S-1-1-0) full access
-        0x00, 0x00, // type=ACCESS_ALLOWED, flags
-        0x14, 0x00, // size
-        0xFF, 0x01, 0x1F, 0x00, // mask
-        0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // SID S-1-1-0
-    ]
-}
+
 
 // ── Per-handle file context ──────────────────────────────────────
 pub struct FsFileCtx {
@@ -125,34 +106,25 @@ impl FileSystemContext for FsCtx {
     fn get_security_by_name(
         &self,
         file_name: &U16CStr,
-        security_descriptor: Option<&mut [c_void]>,
-        _resolve: impl FnOnce(&U16CStr) -> Option<FileSecurity>,
+        _security_descriptor: Option<&mut [c_void]>,
+        resolve: impl FnOnce(&U16CStr) -> Option<FileSecurity>,
     ) -> winfsp::Result<FileSecurity> {
         let path = wide_to_path(file_name);
-        let entry = self
+        // Make sure the path exists on our remote side
+        let _entry = self
             .stat(&path)
             .ok_or_else(|| nt(STATUS_OBJECT_NAME_NOT_FOUND))?;
 
-        let sd = default_security_descriptor();
-        if let Some(buf) = security_descriptor {
-            let bytes: &mut [u8] = unsafe {
-                std::slice::from_raw_parts_mut(
-                    buf.as_mut_ptr() as *mut u8,
-                    buf.len() * std::mem::size_of::<c_void>(),
-                )
-            };
-            let n = sd.len().min(bytes.len());
-            bytes[..n].copy_from_slice(&sd[..n]);
+        // Delegate security descriptor creation entirely to WinFSP
+        if let Some(fs) = resolve(file_name) {
+            return Ok(fs);
         }
 
+        // resolve() returned None – should not happen, but provide a safe fallback
         Ok(FileSecurity {
-            attributes: if entry.is_dir {
-                FILE_ATTRIBUTE_DIRECTORY
-            } else {
-                FILE_ATTRIBUTE_NORMAL
-            },
+            attributes: FILE_ATTRIBUTE_DIRECTORY,
             reparse: false,
-            sz_security_descriptor: sd.len() as u64,
+            sz_security_descriptor: 0,
         })
     }
 
@@ -264,7 +236,7 @@ impl FileSystemContext for FsCtx {
             return Ok(n as u32);
         }
 
-        let mut rc = self.rc.lock().unwrap();
+        let rc = self.rc.lock().unwrap();
         if let Some(cached) = rc.cached_file_data(&context.path) {
             let start = offset as usize;
             if start >= cached.len() {
