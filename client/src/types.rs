@@ -28,8 +28,8 @@ impl CacheConfig {
     pub fn from_cli(no_cache: bool, dir_ttl: u64, file_ttl: u64, max_mb: usize) -> Self {
         if no_cache {
             Self {
-                dir_ttl: Duration::from_millis(100),
-                file_ttl: Duration::from_millis(100),
+                dir_ttl: Duration::ZERO,
+                file_ttl: Duration::ZERO,
                 max_file_cache_bytes: 0,
             }
         } else {

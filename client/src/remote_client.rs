@@ -1,4 +1,4 @@
-use crate::types::{parent_of, CacheConfig, RemoteEntry};
+use crate::types::{CacheConfig, RemoteEntry, parent_of};
 use reqwest::blocking::Client;
 use std::collections::HashMap;
 use std::io::Read;
@@ -27,16 +27,11 @@ impl<R: Read> Read for ProgressReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
         self.sent += n as u64;
-        let pct = if self.total > 0 {
-            self.sent * 100 / self.total
-        } else {
-            100
-        };
+        let pct = if self.total > 0 { self.sent * 100 / self.total } else { 100 };
         if pct != self.last_pct {
             self.last_pct = pct;
             let filled = (pct as usize * 30) / 100;
-            eprint!(
-                "\r\x1b[K  {} [{}>{} ] {}% ({}/{}MB)",
+            eprint!("\r\x1b[K  {} [{}>{} ] {}% ({}/{}MB)",
                 self.name,
                 "=".repeat(filled),
                 " ".repeat(30 - filled),
@@ -87,88 +82,59 @@ impl RemoteClient {
     }
 
     pub fn list_dir(&mut self, path: &str) -> Result<Vec<RemoteEntry>, anyhow::Error> {
-        if !self.cache_config.dir_ttl.is_zero() {
-            if let Some(cached) = self.dir_cache.get(path) {
-                if cached.cached_at.elapsed() < self.cache_config.dir_ttl {
-                    return Ok(cached.entries.clone());
-                }
+        if let Some(cached) = self.dir_cache.get(path) {
+            if cached.cached_at.elapsed() < self.cache_config.dir_ttl {
+                return Ok(cached.entries.clone());
             }
         }
 
         let url = format!("{}/list/{}", self.base_url, path);
         let entries: Vec<RemoteEntry> = self.client.get(&url).send()?.error_for_status()?.json()?;
 
-        if !self.cache_config.dir_ttl.is_zero() {
-            self.dir_cache.insert(
-                path.to_string(),
-                CachedDir {
-                    entries: entries.clone(),
-                    cached_at: Instant::now(),
-                },
-            );
-        }
+        self.dir_cache.insert(path.to_string(), CachedDir {
+            entries: entries.clone(),
+            cached_at: Instant::now(),
+        });
         Ok(entries)
     }
 
     pub fn fetch_file(&mut self, path: &str) -> Result<Vec<u8>, anyhow::Error> {
-        if !self.cache_config.file_ttl.is_zero() {
-            if let Some(cached) = self.file_cache.get(path) {
-                if cached.cached_at.elapsed() < self.cache_config.file_ttl {
-                    return Ok(cached.data.clone());
-                }
+        if let Some(cached) = self.file_cache.get(path) {
+            if cached.cached_at.elapsed() < self.cache_config.file_ttl {
+                return Ok(cached.data.clone());
             }
         }
 
         let url = format!("{}/files/{}", self.base_url, path);
-        let data = self
-            .client
-            .get(&url)
-            .send()?
-            .error_for_status()?
-            .bytes()?
-            .to_vec();
+        let data = self.client.get(&url).send()?.error_for_status()?.bytes()?.to_vec();
 
-        if !self.cache_config.file_ttl.is_zero() {
-            while self.file_cache_size + data.len() > self.cache_config.max_file_cache_bytes {
-                let oldest = self
-                    .file_cache
-                    .iter()
-                    .min_by_key(|(_, v)| v.cached_at)
-                    .map(|(k, _)| k.clone());
-                match oldest {
-                    Some(key) => {
-                        if let Some(evicted) = self.file_cache.remove(&key) {
-                            self.file_cache_size -= evicted.data.len();
-                        }
+        while self.file_cache_size + data.len() > self.cache_config.max_file_cache_bytes {
+            let oldest = self.file_cache.iter()
+                .min_by_key(|(_, v)| v.cached_at)
+                .map(|(k, _)| k.clone());
+            match oldest {
+                Some(key) => {
+                    if let Some(evicted) = self.file_cache.remove(&key) {
+                        self.file_cache_size -= evicted.data.len();
                     }
-                    None => break,
                 }
+                None => break,
             }
-
-            self.file_cache_size += data.len();
-            self.file_cache.insert(
-                path.to_string(),
-                CachedFile {
-                    data: data.clone(),
-                    cached_at: Instant::now(),
-                },
-            );
         }
+
+        self.file_cache_size += data.len();
+        self.file_cache.insert(path.to_string(), CachedFile {
+            data: data.clone(),
+            cached_at: Instant::now(),
+        });
         Ok(data)
     }
 
-    pub fn fetch_range(
-        &self,
-        path: &str,
-        offset: u64,
-        size: u32,
-    ) -> Result<Vec<u8>, anyhow::Error> {
+    pub fn fetch_range(&self, path: &str, offset: u64, size: u32) -> Result<Vec<u8>, anyhow::Error> {
         let url = format!("{}/files/{}", self.base_url, path);
         let end = offset + (size as u64) - 1;
         let range_header = format!("bytes={}-{}", offset, end);
-        let resp = self
-            .client
-            .get(&url)
+        let resp = self.client.get(&url)
             .header("Range", range_header)
             .send()?
             .error_for_status()?;
@@ -177,28 +143,15 @@ impl RemoteClient {
 
     pub fn upload(&self, path: &str, data: Vec<u8>) -> Result<(), anyhow::Error> {
         let url = format!("{}/files/{}", self.base_url, path);
-        self.client
-            .put(&url)
-            .body(data)
-            .send()?
-            .error_for_status()?;
+        self.client.put(&url).body(data).send()?.error_for_status()?;
         Ok(())
     }
 
     #[allow(dead_code)]
-    pub fn upload_streamed(
-        &self,
-        path: &str,
-        reader: impl Read + Send + 'static,
-        size: u64,
-    ) -> Result<(), anyhow::Error> {
+    pub fn upload_streamed(&self, path: &str, reader: impl Read + Send + 'static, size: u64) -> Result<(), anyhow::Error> {
         let url = format!("{}/files/{}", self.base_url, path);
         let body = reqwest::blocking::Body::sized(reader, size);
-        self.client
-            .put(&url)
-            .body(body)
-            .send()?
-            .error_for_status()?;
+        self.client.put(&url).body(body).send()?.error_for_status()?;
         Ok(())
     }
 
@@ -211,26 +164,6 @@ impl RemoteClient {
     pub fn mkdir_remote(&self, path: &str) -> Result<(), anyhow::Error> {
         let url = format!("{}/mkdir/{}", self.base_url, path);
         self.client.post(&url).send()?.error_for_status()?;
-        Ok(())
-    }
-
-    pub fn rename_dir_recursive(
-        &mut self,
-        old_path: &str,
-        new_path: &str,
-    ) -> Result<(), anyhow::Error> {
-        self.mkdir_remote(new_path)?;
-        let entries = self.list_dir(old_path)?;
-        for entry in entries {
-            let old_child = format!("{}/{}", old_path, entry.name);
-            let new_child = format!("{}/{}", new_path, entry.name);
-            if entry.is_dir {
-                self.rename_dir_recursive(&old_child, &new_child)?;
-            } else {
-                let data = self.fetch_file(&old_child)?;
-                self.upload(&new_child, data)?;
-            }
-        }
         Ok(())
     }
 

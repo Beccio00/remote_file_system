@@ -14,20 +14,13 @@ pub fn run(mountpoint: &str, server_url: &str, cache: CacheConfig) {
 
     let fs = RemoteFS::new(server_url, cache);
 
-    let mut options = vec![
+    let options = vec![
         MountOption::FSName("remote-fs".to_string()),
         MountOption::Subtype("remote-fs".to_string()),
         MountOption::DefaultPermissions,
         MountOption::AllowOther,
         MountOption::AutoUnmount,
     ];
-
-    #[cfg(target_os = "macos")]
-    {
-        options.push(MountOption::CUSTOM("noappledouble".to_string()));
-        options.push(MountOption::CUSTOM("noapplexattr".to_string()));
-        options.push(MountOption::CUSTOM("nobrowse".to_string()));
-    }
 
     if let Err(e) = fuser::mount2(fs, mountpoint, &options) {
         eprintln!("Mount failed: {}", e);
