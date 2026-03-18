@@ -41,41 +41,52 @@ _TODO_
 
 ### Windows
 
-**1. Install WinFSP**
-
-Download and install the `.msi` from https://winfsp.dev/rel/. Default installation is fine.
-
-**2. Install Visual Studio Build Tools**
-
-Install [Visual Studio 2022](https://visualstudio.microsoft.com/) (Community) with these components:
-
-- **Desktop development with C++** (workload)
-- **Windows SDK** (10 or 11)
-- **C++ Clang tools for Windows** (individual component — needed by `bindgen` for `libclang.dll`)
-
-**3. Set up the build environment**
-
-Before compiling, load the MSVC environment and set `LIBCLANG_PATH`. In PowerShell:
+**1. Install prerequisites (PowerShell as Administrator)**
 
 ```powershell
-# Load MSVC environment
-cmd /c "call `"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat`" >nul 2>&1 && set" |
-  ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2]) } }
-
-# Set libclang path
-$env:LIBCLANG_PATH = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin"
+winget install -e --id WinFsp.WinFsp
+winget install -e --id Microsoft.VisualStudio.2022.Community --override "--add Microsoft.VisualStudio.Workload.NativeDesktop --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.Windows11SDK.22000"
 ```
 
-> Paths may vary depending on your VS installation. This step may not be needed if you're using a **Developer PowerShell for VS 2022**.
+If Visual Studio is already installed, open **Visual Studio Installer** and ensure these components are present:
 
-**4. Build and mount**
+- **Desktop development with C++**
+- **C++ Clang tools for Windows**
+- **Windows 10/11 SDK**
+
+**2. Set `LIBCLANG_PATH` once (PowerShell)**
 
 ```powershell
+setx LIBCLANG_PATH "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin"
+```
+
+Close and reopen the terminal after `setx`.
+
+**3. Build (inside `client/`)**
+
+```powershell
+cd client
+cargo clean
 cargo build
+```
+
+`cargo clean` is recommended on first run (or after toolchain/dependency changes) to regenerate WinFSP bindings correctly.
+
+**4. Run and mount**
+
+```powershell
 cargo run -- R:
 ```
 
 `R:` can be any unused drive letter.
+
+If `cargo build` still reports `Unable to find libclang`, run in the same terminal:
+
+```powershell
+$env:LIBCLANG_PATH = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin"
+cargo clean
+cargo build
+```
 
 ---
 
