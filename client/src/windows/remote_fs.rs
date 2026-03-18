@@ -476,7 +476,7 @@ impl FileSystemContext for RemoteFS {
 
     fn rename(
         &self,
-        _context: &Self::FileContext,
+        context: &Self::FileContext,
         file_name: &U16CStr,
         new_file_name: &U16CStr,
         _replace_if_exists: bool,
@@ -484,13 +484,20 @@ impl FileSystemContext for RemoteFS {
         let old = wide_to_path(file_name);
         let new = wide_to_path(new_file_name);
         let mut rc = self.rc.lock().unwrap();
-        let data = rc
-            .fetch_file(&old)
-            .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
-        rc.upload(&new, data)
-            .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
-        rc.delete_remote(&old)
-            .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+        if context.is_dir {
+            rc.rename_dir_recursive(&old, &new)
+                .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+            rc.delete_remote(&old)
+                .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+        } else {
+            let data = rc
+                .fetch_file(&old)
+                .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+            rc.upload(&new, data)
+                .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+            rc.delete_remote(&old)
+                .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+        }
         rc.invalidate(&old);
         rc.invalidate(&new);
         Ok(())
