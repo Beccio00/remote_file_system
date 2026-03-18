@@ -7,6 +7,7 @@ use crate::types::{CacheConfig, RemoteEntry, parent_of};
 use std::ffi::c_void;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use winfsp::filesystem::*;
 use winfsp::{U16CStr, U16CString};
@@ -19,6 +20,8 @@ const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 const STATUS_OBJECT_NAME_NOT_FOUND: i32 = 0xC000_0034_u32 as i32;
 const STATUS_UNSUCCESSFUL: i32 = 0xC000_0001_u32 as i32;
 const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010_u32 as i32;
+const STATUS_DIRECTORY_NOT_EMPTY: i32 = 0xC000_0101_u32 as i32;
+const FSP_CLEANUP_DELETE_FLAG: u32 = winfsp_sys::FspCleanupDelete as u32;
 
 fn nt(code: i32) -> winfsp::FspError {
     winfsp::FspError::NTSTATUS(code)
@@ -71,7 +74,9 @@ pub struct FileCtx {
     pub path: String,
     pub is_dir: bool,
     /// Temporary file used for buffering writes before upload.
-    pub write_buf: Option<std::fs::File>,
+    pub write_buf: Mutex<Option<std::fs::File>>,
+    pub dirty: AtomicBool,
+    pub delete_on_close: AtomicBool,
 }
 
 // ── Filesystem context ───────────────────────────────────────────
@@ -120,16 +125,23 @@ impl FileSystemContext for RemoteFS {
         resolve: impl FnOnce(&U16CStr) -> Option<FileSecurity>,
     ) -> winfsp::Result<FileSecurity> {
         let path = wide_to_path(file_name);
-        let _entry = self
+        let entry = self
             .stat(&path)
             .ok_or_else(|| nt(STATUS_OBJECT_NAME_NOT_FOUND))?;
 
-            if let Some(fs) = resolve(file_name) {
+        let attrs = if entry.is_dir {
+            FILE_ATTRIBUTE_DIRECTORY
+        } else {
+            FILE_ATTRIBUTE_NORMAL
+        };
+
+        if let Some(mut fs) = resolve(file_name) {
+            fs.attributes = attrs;
             return Ok(fs);
         }
 
         Ok(FileSecurity {
-            attributes: FILE_ATTRIBUTE_DIRECTORY,
+            attributes: attrs,
             reparse: false,
             sz_security_descriptor: 0,
         })
@@ -147,11 +159,25 @@ impl FileSystemContext for RemoteFS {
             .stat(&path)
             .ok_or_else(|| nt(STATUS_OBJECT_NAME_NOT_FOUND))?;
 
+        let write_buf = if entry.is_dir {
+            None
+        } else {
+            let mut tmp = tempfile::tempfile().map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+            if let Ok(data) = self.rc.lock().unwrap().fetch_file(&path) {
+                tmp.write_all(&data).map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+                tmp.seek(SeekFrom::Start(0))
+                    .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+            }
+            Some(tmp)
+        };
+
         *file_info.as_mut() = make_file_info(entry.is_dir, entry.size);
         Ok(FileCtx {
             path,
             is_dir: entry.is_dir,
-            write_buf: None,
+            write_buf: Mutex::new(write_buf),
+            dirty: AtomicBool::new(false),
+            delete_on_close: AtomicBool::new(false),
         })
     }
 
@@ -235,8 +261,15 @@ impl FileSystemContext for RemoteFS {
         buffer: &mut [u8],
         offset: u64,
     ) -> winfsp::Result<u32> {
-        if let Some(ref wb) = context.write_buf {
-            let mut f = wb.try_clone().map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+        let local_buf = {
+            let guard = context.write_buf.lock().map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+            guard
+                .as_ref()
+                .map(|f| f.try_clone().map_err(|_| nt(STATUS_UNSUCCESSFUL)))
+                .transpose()?
+        };
+
+        if let Some(mut f) = local_buf {
             f.seek(SeekFrom::Start(offset))
                 .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
             let n = f.read(buffer).map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
@@ -296,7 +329,13 @@ impl FileSystemContext for RemoteFS {
         } else {
             None
         };
-        Ok(FileCtx { path, is_dir, write_buf })
+        Ok(FileCtx {
+            path,
+            is_dir,
+            write_buf: Mutex::new(write_buf),
+            dirty: AtomicBool::new(false),
+            delete_on_close: AtomicBool::new(false),
+        })
     }
 
     fn write(
@@ -308,8 +347,11 @@ impl FileSystemContext for RemoteFS {
         _constrained_io: bool,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<u32> {
-        let wb = context
-            .write_buf
+        let mut guard = context.write_buf.lock().map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+        if guard.is_none() {
+            *guard = Some(tempfile::tempfile().map_err(|_| nt(STATUS_UNSUCCESSFUL))?);
+        }
+        let wb = guard
             .as_ref()
             .ok_or_else(|| nt(STATUS_INVALID_DEVICE_REQUEST))?;
         let mut f = wb.try_clone().map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
@@ -317,6 +359,7 @@ impl FileSystemContext for RemoteFS {
             .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
         f.write_all(buf).map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
         let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+        context.dirty.store(true, Ordering::SeqCst);
         *file_info = make_file_info(false, size);
         Ok(buf.len() as u32)
     }
@@ -330,13 +373,14 @@ impl FileSystemContext for RemoteFS {
         _extra_buffer: Option<&[u8]>,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
-        if let Some(ref wb) = context.write_buf {
+        let mut guard = context.write_buf.lock().map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+        if guard.is_none() {
+            *guard = Some(tempfile::tempfile().map_err(|_| nt(STATUS_UNSUCCESSFUL))?);
+        }
+        if let Some(ref wb) = *guard {
             wb.set_len(0).map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
         }
-        let mut rc = self.rc.lock().unwrap();
-        rc.upload(&context.path, Vec::new())
-            .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
-        rc.invalidate(&context.path);
+        context.dirty.store(true, Ordering::SeqCst);
         *file_info = make_file_info(false, 0);
         Ok(())
     }
@@ -347,21 +391,27 @@ impl FileSystemContext for RemoteFS {
         _file_name: Option<&U16CStr>,
         flags: u32,
     ) {
-        if flags & 0x01 != 0 {
+        if (flags & FSP_CLEANUP_DELETE_FLAG) != 0 || context.delete_on_close.load(Ordering::SeqCst) {
             let mut rc = self.rc.lock().unwrap();
             let _ = rc.delete_remote(&context.path);
             rc.invalidate(&context.path);
             return;
         }
 
-        if let Some(ref wb) = context.write_buf {
-            if let Ok(mut f) = wb.try_clone() {
-                if f.seek(SeekFrom::Start(0)).is_ok() {
-                    let mut data = Vec::new();
-                    if f.read_to_end(&mut data).is_ok() && !data.is_empty() {
-                        let mut rc = self.rc.lock().unwrap();
-                        let _ = rc.upload(&context.path, data);
-                        rc.invalidate(&context.path);
+        if !context.dirty.load(Ordering::SeqCst) {
+            return;
+        }
+
+        if let Ok(guard) = context.write_buf.lock() {
+            if let Some(ref wb) = *guard {
+                if let Ok(mut f) = wb.try_clone() {
+                    if f.seek(SeekFrom::Start(0)).is_ok() {
+                        let mut data = Vec::new();
+                        if f.read_to_end(&mut data).is_ok() {
+                            let mut rc = self.rc.lock().unwrap();
+                            let _ = rc.upload(&context.path, data);
+                            rc.invalidate(&context.path);
+                        }
                     }
                 }
             }
@@ -374,11 +424,14 @@ impl FileSystemContext for RemoteFS {
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
         if let Some(ctx) = context {
-            let size = if let Some(ref wb) = ctx.write_buf {
-                wb.metadata().map(|m| m.len()).unwrap_or(0)
-            } else {
-                self.stat(&ctx.path).map(|e| e.size).unwrap_or(0)
+            let local_size = {
+                let guard = ctx.write_buf.lock().map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+                guard
+                    .as_ref()
+                    .and_then(|wb| wb.metadata().ok().map(|m| m.len()))
             };
+            let size = local_size
+                .unwrap_or_else(|| self.stat(&ctx.path).map(|e| e.size).unwrap_or(0));
             *file_info = make_file_info(ctx.is_dir, size);
         }
         Ok(())
@@ -404,10 +457,15 @@ impl FileSystemContext for RemoteFS {
         _set_allocation_size: bool,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
-        if let Some(ref wb) = context.write_buf {
+        let mut guard = context.write_buf.lock().map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
+        if guard.is_none() {
+            *guard = Some(tempfile::tempfile().map_err(|_| nt(STATUS_UNSUCCESSFUL))?);
+        }
+        if let Some(ref wb) = *guard {
             wb.set_len(new_size)
                 .map_err(|_| nt(STATUS_UNSUCCESSFUL))?;
         }
+        context.dirty.store(true, Ordering::SeqCst);
         *file_info = make_file_info(context.is_dir, new_size);
         Ok(())
     }
@@ -436,10 +494,24 @@ impl FileSystemContext for RemoteFS {
 
     fn set_delete(
         &self,
-        _context: &Self::FileContext,
+        context: &Self::FileContext,
         _file_name: &U16CStr,
-        _delete_file: bool,
+        delete_file: bool,
     ) -> winfsp::Result<()> {
+        if delete_file && context.is_dir {
+            let has_children = self
+                .rc
+                .lock()
+                .unwrap()
+                .list_dir(&context.path)
+                .map(|entries| !entries.is_empty())
+                .unwrap_or(false);
+            if has_children {
+                return Err(nt(STATUS_DIRECTORY_NOT_EMPTY));
+            }
+        }
+
+        context.delete_on_close.store(delete_file, Ordering::SeqCst);
         Ok(())
     }
 }
