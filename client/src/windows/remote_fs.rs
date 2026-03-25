@@ -39,6 +39,10 @@ fn filename_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+fn win_name_eq(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
 /// Current time as a Windows FILETIME value
 /// (100-nanosecond intervals since 1601-01-01).
 fn filetime_now() -> u64 {
@@ -110,7 +114,7 @@ impl RemoteFS {
             .list_dir(&parent)
             .ok()?
             .into_iter()
-            .find(|e| e.name == name)
+            .find(|e| win_name_eq(&e.name, name))
     }
 }
 
