@@ -1,6 +1,61 @@
 use super::remote_fs::RemoteFS;
 use crate::types::CacheConfig;
+use std::ffi::OsStr;
+use std::os::windows::ffi::OsStrExt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use winfsp::host::{FileSystemHost, VolumeParams};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, EVENT_MODIFY_STATE, OpenEventW, SetEvent, WaitForSingleObject,
+};
+
+fn normalize_mountpoint(mountpoint: &str) -> String {
+    mountpoint
+        .trim()
+        .trim_end_matches('\\')
+        .to_ascii_uppercase()
+}
+
+fn event_name_for_mount(mountpoint: &str) -> String {
+    format!("Local\\remote-fs-unmount-{}", normalize_mountpoint(mountpoint))
+}
+
+fn to_wide_null(s: &str) -> Vec<u16> {
+    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+fn create_shutdown_event(mountpoint: &str) -> Result<HANDLE, String> {
+    let name = event_name_for_mount(mountpoint);
+    let wide = to_wide_null(&name);
+    let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide.as_ptr()) };
+    if handle.is_null() {
+        return Err("CreateEventW failed".to_string());
+    }
+    Ok(handle)
+}
+
+pub fn request_unmount(mountpoint: &str) -> Result<bool, String> {
+    let name = event_name_for_mount(mountpoint);
+    let wide = to_wide_null(&name);
+
+    let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, wide.as_ptr()) };
+    if handle.is_null() {
+        return Ok(false);
+    }
+
+    let ok = unsafe { SetEvent(handle) } != 0;
+    unsafe {
+        CloseHandle(handle);
+    }
+
+    if ok {
+        Ok(true)
+    } else {
+        Err("SetEvent failed".to_string())
+    }
+}
 
 pub fn run(mountpoint: &str, server_url: &str, cache: CacheConfig) {
     println!("Mounting at: {}", mountpoint);
@@ -32,9 +87,40 @@ pub fn run(mountpoint: &str, server_url: &str, cache: CacheConfig) {
     host.start().expect("Failed to start filesystem dispatcher");
 
     println!("Filesystem mounted successfully at {}", mountpoint);
-    println!("Press Ctrl+C to unmount and exit.");
+    println!("Press Ctrl+C for a clean unmount and exit.");
 
-    loop {
-        std::thread::park();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_handler = Arc::clone(&shutdown);
+    let shutdown_event = create_shutdown_event(mountpoint).ok();
+
+    if let Err(e) = ctrlc::set_handler(move || {
+        shutdown_handler.store(true, Ordering::SeqCst);
+    }) {
+        eprintln!("Warning: failed to install Ctrl+C handler: {}", e);
     }
+
+    while !shutdown.load(Ordering::SeqCst) {
+        if let Some(event) = shutdown_event {
+            let wait = unsafe { WaitForSingleObject(event, 250) };
+            if wait == WAIT_OBJECT_0 {
+                shutdown.store(true, Ordering::SeqCst);
+                break;
+            }
+            if wait != WAIT_TIMEOUT {
+                shutdown.store(true, Ordering::SeqCst);
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    println!("Shutdown requested. Unmounting filesystem...");
+    host.unmount();
+    host.stop();
+    if let Some(event) = shutdown_event {
+        unsafe {
+            CloseHandle(event);
+        }
+    }
+    println!("Filesystem unmounted.");
 }

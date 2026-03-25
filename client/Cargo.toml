@@ -20,6 +20,8 @@ daemonize = "0.5"
 [target.'cfg(windows)'.dependencies]
 winfsp = { version = "0.12", features = ["system"] }
 winfsp-sys = "0.12"
+ctrlc = "3.4"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winfsp = "0.12"

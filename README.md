@@ -26,6 +26,7 @@ Starts on `http://127.0.0.1:8000`, serving files from `server/storage/`.
 ## Client
 
 Requires [Rust](https://rustup.rs/) and OS-specific dependencies.
+For detailed CLI options, run `cargo run --help`.
 
 ### Linux
 
@@ -37,7 +38,11 @@ cargo run -- /tmp/mnt
 
 ### macOS
 
-_TODO_
+```bash
+cargo build
+mkdir -p /tmp/mnt/remote-fs
+cargo run -- /tmp/mnt/remote-fs
+```
 
 ### Windows
 
@@ -101,10 +106,12 @@ Options:
   --file-cache-ttl <SEC>   File cache TTL in seconds (default: 10)
   --max-cache-mb <MB>      Max file cache size in MB (default: 64)
   --no-cache               Disable caching
-  --daemon                 Run in background (Unix only)
+  --daemon                 Run in background (Unix/Windows)
+  --unmount                Request clean unmount of a Windows daemon mountpoint
 ```
 
 ## Unmount
 
 - **Linux/macOS**: `fusermount -u /tmp/mnt` or `Ctrl+C`
-- **Windows**: `Ctrl+C` in the terminal running the client
+- **Windows**: `cargo run -- R: --unmount` or `Ctrl+C` 
+- **macOS**: `diskutil unmount /tmp/mnt/remote-fs`

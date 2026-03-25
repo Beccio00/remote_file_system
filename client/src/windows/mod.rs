@@ -13,3 +13,17 @@ pub fn run(cli: &Cli) {
     );
     mount::run(&cli.mountpoint, &cli.server_url, cache);
 }
+
+pub fn request_unmount(mountpoint: &str) {
+    match mount::request_unmount(mountpoint) {
+        Ok(true) => println!("Unmount requested for {}", mountpoint),
+        Ok(false) => {
+            eprintln!("No active daemon mount found for {}", mountpoint);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Failed to request unmount for {}: {}", mountpoint, e);
+            std::process::exit(1);
+        }
+    }
+}
