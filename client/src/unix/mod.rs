@@ -3,6 +3,7 @@ mod mount;
 mod linux;
 mod macos;
 
+/// Dispatches startup to the Unix implementation for the current target OS.
 pub fn run(cli: &crate::Cli) {
     #[cfg(target_os = "linux")]
     linux::run(cli);

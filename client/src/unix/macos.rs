@@ -1,6 +1,7 @@
 use crate::Cli;
 use crate::types::CacheConfig;
 
+/// macOS entry point that validates macFUSE and mounts the filesystem.
 pub fn run(cli: &Cli) {
     if !std::path::Path::new("/Library/Frameworks/macFUSE.framework").exists() {
         eprintln!("macFUSE is not installed.");

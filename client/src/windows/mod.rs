@@ -4,6 +4,7 @@ mod mount;
 use crate::types::CacheConfig;
 use crate::Cli;
 
+/// Builds cache settings from CLI and starts the Windows filesystem backend.
 pub fn run(cli: &Cli) {
     let cache = CacheConfig::from_cli(
         cli.no_cache,
@@ -14,6 +15,7 @@ pub fn run(cli: &Cli) {
     mount::run(&cli.mountpoint, &cli.server_url, cache);
 }
 
+/// Sends an unmount request to a running Windows daemon instance.
 pub fn request_unmount(mountpoint: &str) {
     match mount::request_unmount(mountpoint) {
         Ok(true) => println!("Unmount requested for {}", mountpoint),

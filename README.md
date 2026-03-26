@@ -28,6 +28,24 @@ Starts on `http://127.0.0.1:8000`, serving files from `server/storage/`.
 Requires [Rust](https://rustup.rs/) and OS-specific dependencies.
 For detailed CLI options, run `cargo run --help`.
 
+### Connect To A Remote Server (Same LAN)
+
+From the repository root, run the client package and point `--server-url` to the server host/IP and port.
+
+**Unix (Linux/macOS mountpoint under `/tmp/mnt`)**
+
+```bash
+cargo run -p client -- /tmp/mnt/remote-fs --server-url http://192.168.1.50:8000
+```
+
+**Windows (drive letter mountpoint, e.g. `R:`)**
+
+```powershell
+cargo run -p client -- R: --server-url http://192.168.1.50:8000
+```
+
+Replace `192.168.1.50:8000` with the actual IP and port of the machine running the server.
+
 ### Linux
 
 ```bash
@@ -106,7 +124,7 @@ Options:
   --file-cache-ttl <SEC>   File cache TTL in seconds (default: 10)
   --max-cache-mb <MB>      Max file cache size in MB (default: 64)
   --no-cache               Disable caching
-  --daemon                 Run in background (Unix/Windows)
+  --daemon                 Run in background
   --unmount                Request clean unmount of a Windows daemon mountpoint
 ```
 

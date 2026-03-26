@@ -36,7 +36,6 @@ pub struct Cli {
     #[arg(long, default_value = "false")]
     pub no_cache: bool,
 
-    #[cfg(any(unix, windows))]
     /// Run as a background daemon
     #[arg(long, default_value = "false")]
     pub daemon: bool,

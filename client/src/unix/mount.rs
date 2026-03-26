@@ -2,6 +2,7 @@ use super::remote_fs::RemoteFS;
 use crate::types::CacheConfig;
 use fuser::MountOption;
 
+/// Mounts the FUSE filesystem with options tailored for remote access.
 pub fn run(mountpoint: &str, server_url: &str, cache: CacheConfig) {
     println!("Mounting at: {}", mountpoint);
     println!("Server: {}", server_url);
@@ -14,6 +15,7 @@ pub fn run(mountpoint: &str, server_url: &str, cache: CacheConfig) {
 
     let fs = RemoteFS::new(server_url, cache);
 
+    // Core mount configuration shared across Unix targets.
     let mut options = vec![
         MountOption::FSName("remote-fs".to_string()),
         MountOption::Subtype("remote-fs".to_string()),
