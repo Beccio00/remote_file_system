@@ -16,7 +16,7 @@ pub fn run(mountpoint: &str, server_url: &str, cache: CacheConfig) {
     let fs = RemoteFS::new(server_url, cache);
 
     // Core mount configuration shared across Unix targets.
-    let mut options = vec![
+    let options = vec![
         MountOption::FSName("remote-fs".to_string()),
         MountOption::Subtype("remote-fs".to_string()),
         MountOption::DefaultPermissions,

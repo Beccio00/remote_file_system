@@ -1,7 +1,7 @@
 use clap::Parser;
 
-mod types;
 mod remote_client;
+mod types;
 
 #[cfg(unix)]
 mod unix;
@@ -48,90 +48,6 @@ pub struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-
-    #[cfg(windows)]
-    if cli.unmount {
-        windows::request_unmount(&cli.mountpoint);
-        return;
-    }
-
-    // Unix daemonization via daemonize crate.
-    #[cfg(unix)]
-    if cli.daemon {
-        use daemonize::Daemonize;
-        let daemonize = Daemonize::new()
-            .working_directory(".")
-            .umask(0o022);
-        match daemonize.start() {
-            Ok(_) => eprintln!("Daemonized successfully (PID {})", std::process::id()),
-            Err(e) => {
-                eprintln!("Failed to daemonize: {}", e);
-                std::process::exit(1);
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    if cli.daemon {
-        use std::fs;
-        use std::os::windows::process::CommandExt;
-        use std::path::PathBuf;
-        use std::process::{Command, Stdio};
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        // Relaunch without --daemon using detached flags, then exit parent.
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-        let exe = std::env::current_exe().unwrap_or_else(|e| {
-            eprintln!("Failed to get executable path: {}", e);
-            std::process::exit(1);
-        });
-
-        let args: Vec<_> = std::env::args_os()
-            .skip(1)
-            .filter(|arg| arg != "--daemon")
-            .collect();
-
-        // Spawn daemon from a temp copy to avoid locking target/debug/client.exe.
-        let mut daemon_exe: PathBuf = std::env::temp_dir();
-        daemon_exe.push("remote-fs-daemon");
-        if let Err(e) = fs::create_dir_all(&daemon_exe) {
-            eprintln!("Failed to prepare daemon temp directory: {}", e);
-            std::process::exit(1);
-        }
-
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        daemon_exe.push(format!("client-daemon-{}-{}.exe", std::process::id(), ts));
-
-        if let Err(e) = fs::copy(&exe, &daemon_exe) {
-            eprintln!("Failed to stage daemon executable: {}", e);
-            std::process::exit(1);
-        }
-
-        let mut child = Command::new(&daemon_exe);
-        child
-            .args(args)
-            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        match child.spawn() {
-            Ok(_) => {
-                eprintln!("Daemonized successfully");
-                std::process::exit(0);
-            }
-            Err(e) => {
-                eprintln!("Failed to daemonize on Windows: {}", e);
-                std::process::exit(1);
-            }
-        }
-    }
 
     #[cfg(unix)]
     unix::run(&cli);
