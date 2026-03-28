@@ -1,8 +1,7 @@
 mod remote_fs;
 mod mount;
 
-use crate::types::CacheConfig;
-use crate::Cli;
+use crate::cli::Cli;
 
 /// Builds cache settings from CLI and starts the Windows filesystem backend.
 /// Handles unmount requests if the --unmount flag is present.
@@ -14,12 +13,7 @@ pub fn run(cli: &Cli) {
 
     daemonize_if_requested(cli);
 
-    let cache = CacheConfig::from_cli(
-        cli.no_cache,
-        cli.dir_cache_ttl,
-        cli.file_cache_ttl,
-        cli.max_cache_mb,
-    );
+    let cache = cli.cache_config();
     mount::run(&cli.mountpoint, &cli.server_url, cache);
 }
 

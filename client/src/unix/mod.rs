@@ -1,9 +1,10 @@
 mod remote_fs;
 mod linux;
 mod macos;
+use daemonize::Daemonize;
 
 /// Dispatches startup to the Unix implementation for the current target OS.
-pub fn run(cli: &crate::Cli) {
+pub fn run(cli: &crate::cli::Cli) {
     daemonize_if_requested(cli);
 
     #[cfg(target_os = "linux")]
@@ -13,12 +14,11 @@ pub fn run(cli: &crate::Cli) {
     macos::run(cli);
 }
 
-fn daemonize_if_requested(cli: &crate::Cli) {
+fn daemonize_if_requested(cli: &crate::cli::Cli) {
     if !cli.daemon {
         return;
     }
 
-    use daemonize::Daemonize;
     let daemonize = Daemonize::new().working_directory(".").umask(0o022);
     match daemonize.start() {
         Ok(_) => eprintln!("Daemonized successfully (PID {})", std::process::id()),

@@ -1,13 +1,10 @@
-use crate::Cli;
-use crate::types::CacheConfig;
+use crate::cli::Cli;
 use fuser::MountOption;
 use super::remote_fs::RemoteFS;
 
 /// Linux entry point that resolves cache settings and starts mounting.
 pub fn run(cli: &Cli) {
-    let cache = CacheConfig::from_cli(
-        cli.no_cache, cli.dir_cache_ttl, cli.file_cache_ttl, cli.max_cache_mb,
-    );
+    let cache = cli.cache_config();
 
     println!("Mounting at: {}", cli.mountpoint);
     println!("Server: {}", cli.server_url);
