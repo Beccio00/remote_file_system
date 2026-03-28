@@ -15,13 +15,23 @@ Requires Python 3.10+.
 
 ```bash
 cd server
+python -m venv .venv
+
+# Linux/macOS
+source .venv/bin/activate
+
+# Windows (PowerShell)
+# .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+
+#Starts on `http://127.0.0.1:8000`, serving files from `server/storage/`.
 python main.py
+
+or
+
+#If the client runs on another machine, start uvicorn by binding to all network interfaces:
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
-
-Starts on `http://127.0.0.1:8000`, serving files from `server/storage/`.
-
----
 
 ## Client
 

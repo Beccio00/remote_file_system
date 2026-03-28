@@ -39,7 +39,6 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Returns cache settings derived from CLI flags.
     pub fn cache_config(&self) -> CacheConfig {
         CacheConfig::from_cli(
             self.no_cache,
