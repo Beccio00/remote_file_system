@@ -1,5 +1,4 @@
-//! Windows WinFSP filesystem implementation.
-//! Mirrors unix/remote_fs.rs (FUSE) but uses the WinFSP FileSystemContext API.
+//! WinFSP filesystem backend for the remote HTTP storage service.
 
 use crate::remote_client::RemoteClient;
 use crate::types::{CacheConfig, RemoteEntry, parent_of};
@@ -12,11 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use winfsp::filesystem::*;
 use winfsp::{U16CStr, U16CString};
 
-// ── Windows file-attribute constants ────────────────────────────
+/// Windows file attribute flags used to build FileInfo values.
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 
-// ── NTSTATUS codes used for error mapping ───────────────────────
+/// NTSTATUS values returned for common filesystem failures.
 const STATUS_OBJECT_NAME_NOT_FOUND: i32 = 0xC000_0034_u32 as i32;
 const STATUS_UNSUCCESSFUL: i32 = 0xC000_0001_u32 as i32;
 const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010_u32 as i32;
@@ -28,7 +27,7 @@ fn nt(code: i32) -> winfsp::FspError {
 }
 
 
-/// Convert a WinFSP wide path `\foo\bar` to the internal `foo/bar` form.
+/// Converts a WinFSP path like `\foo\bar` to internal `foo/bar` format.
 fn wide_to_path(name: &U16CStr) -> String {
     name.to_string_lossy()
         .trim_start_matches('\\')
@@ -43,8 +42,7 @@ fn win_name_eq(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
 }
 
-/// Current time as a Windows FILETIME value
-/// (100-nanosecond intervals since 1601-01-01).
+/// Returns the current timestamp encoded as Windows FILETIME.
 fn filetime_now() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     const EPOCH_DIFF: u64 = 116_444_736_000_000_000;
@@ -72,8 +70,7 @@ pub(super) fn make_file_info(is_dir: bool, size: u64) -> FileInfo {
     }
 }
 
-/// Holds state for a single open file handle.
-/// Equivalent to WriteBuffer in unix/remote_fs.rs.
+/// Per-handle state for open files, including buffered writes.
 pub struct FileCtx {
     pub path: String,
     pub is_dir: bool,
@@ -83,9 +80,7 @@ pub struct FileCtx {
     pub delete_on_close: AtomicBool,
 }
 
-// ── Filesystem context ───────────────────────────────────────────
-/// The WinFSP filesystem implementation.
-/// Mirrors RemoteFS (FUSE) but implements FileSystemContext instead.
+/// WinFSP filesystem context that forwards operations to the remote server.
 pub struct RemoteFS {
     rc: Mutex<RemoteClient>,
 }
@@ -97,7 +92,7 @@ impl RemoteFS {
         }
     }
 
-    /// Stat a path: returns `None` if the path does not exist on the server.
+    /// Returns metadata for a path, or None if it does not exist remotely.
     fn stat(&self, path: &str) -> Option<RemoteEntry> {
         if path.is_empty() {
             return Some(RemoteEntry {
@@ -118,7 +113,6 @@ impl RemoteFS {
     }
 }
 
-// ── FileSystemContext implementation ─────────────────────────────
 impl FileSystemContext for RemoteFS {
     type FileContext = FileCtx;
 

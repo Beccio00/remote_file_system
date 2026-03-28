@@ -11,6 +11,7 @@ use windows_sys::Win32::System::Threading::{
     CreateEventW, EVENT_MODIFY_STATE, OpenEventW, SetEvent, WaitForSingleObject,
 };
 
+/// Canonicalizes mountpoints so daemon and unmount commands share the same key.
 fn normalize_mountpoint(mountpoint: &str) -> String {
     mountpoint
         .trim()
@@ -18,14 +19,17 @@ fn normalize_mountpoint(mountpoint: &str) -> String {
         .to_ascii_uppercase()
 }
 
+/// Builds the named event identifier used to request daemon shutdown.
 fn event_name_for_mount(mountpoint: &str) -> String {
     format!("Local\\remote-fs-unmount-{}", normalize_mountpoint(mountpoint))
 }
 
+/// Converts UTF-8 text to a null-terminated UTF-16 string for Win32 APIs.
 fn to_wide_null(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
+/// Creates a per-mount event used by external unmount requests.
 fn create_shutdown_event(mountpoint: &str) -> Result<HANDLE, String> {
     let name = event_name_for_mount(mountpoint);
     let wide = to_wide_null(&name);
@@ -36,6 +40,7 @@ fn create_shutdown_event(mountpoint: &str) -> Result<HANDLE, String> {
     Ok(handle)
 }
 
+/// Signals an active mount daemon to stop and unmount.
 pub fn request_unmount(mountpoint: &str) -> Result<bool, String> {
     let name = event_name_for_mount(mountpoint);
     let wide = to_wide_null(&name);
@@ -57,6 +62,7 @@ pub fn request_unmount(mountpoint: &str) -> Result<bool, String> {
     }
 }
 
+/// Starts the WinFSP dispatcher and keeps it alive until shutdown is requested.
 pub fn run(mountpoint: &str, server_url: &str, cache: CacheConfig) {
     println!("Mounting at: {}", mountpoint);
     println!("Server: {}", server_url);

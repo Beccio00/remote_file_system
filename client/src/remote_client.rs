@@ -4,17 +4,20 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::time::Instant;
 
+/// Cached directory listing with insertion timestamp.
 struct CachedDir {
     entries: Vec<RemoteEntry>,
     cached_at: Instant,
 }
 
+/// Cached file payload with insertion timestamp.
 struct CachedFile {
     data: Vec<u8>,
     cached_at: Instant,
 }
 
 #[allow(dead_code)]
+/// Reader wrapper used to print upload progress while streaming.
 pub struct ProgressReader<R: Read> {
     pub inner: R,
     pub total: u64,
@@ -52,6 +55,7 @@ impl<R: Read> Read for ProgressReader<R> {
     }
 }
 
+/// HTTP client and local caches used by both Unix and Windows filesystem backends.
 pub struct RemoteClient {
     client: Client,
     base_url: String,
@@ -62,6 +66,7 @@ pub struct RemoteClient {
 }
 
 impl RemoteClient {
+    /// Creates a new remote client with cache policy and long-lived HTTP session.
     pub fn new(base_url: &str, cache_config: CacheConfig) -> Self {
         Self {
             client: Client::builder()

@@ -2,12 +2,14 @@ use serde::Deserialize;
 use std::time::Duration;
 
 #[derive(Debug, Deserialize, Clone)]
+/// Entry metadata returned by the remote server for a directory listing.
 pub struct RemoteEntry {
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
 }
 
+/// Runtime cache policy used by the client filesystem layer.
 pub struct CacheConfig {
     pub dir_ttl: Duration,
     pub file_ttl: Duration,
@@ -25,6 +27,7 @@ impl Default for CacheConfig {
 }
 
 impl CacheConfig {
+    /// Builds cache settings from CLI flags, including no-cache mode.
     pub fn from_cli(no_cache: bool, dir_ttl: u64, file_ttl: u64, max_mb: usize) -> Self {
         if no_cache {
             Self {
@@ -43,6 +46,7 @@ impl CacheConfig {
 }
 
 #[allow(dead_code)]
+/// Joins a parent path and child name using the remote path format.
 pub fn join_path(parent: &str, name: &str) -> String {
     if parent.is_empty() {
         name.to_string()
@@ -51,6 +55,7 @@ pub fn join_path(parent: &str, name: &str) -> String {
     }
 }
 
+/// Returns the parent directory of a remote path.
 pub fn parent_of(path: &str) -> String {
     match path.rfind('/') {
         Some(pos) => path[..pos].to_string(),

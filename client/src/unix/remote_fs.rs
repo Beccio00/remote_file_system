@@ -9,17 +9,20 @@ use std::io::{Read, Seek, SeekFrom, Write as IoWrite};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+/// Filters Finder metadata files that should not be mirrored remotely.
 fn is_macos_metadata(name: &OsStr) -> bool {
     let s = name.to_string_lossy();
     s.starts_with("._") || s == ".DS_Store" || s == ".localized"
 }
 
+/// Buffered write state associated with an open file handle.
 struct WriteBuffer {
     file: std::fs::File,
     path: String,
     dirty: bool,
 }
 
+/// Builds FUSE attributes from remote metadata.
 fn make_attr(ino: u64, size: u64, kind: FileType) -> FileAttr {
     let now = SystemTime::now();
     FileAttr {
@@ -45,6 +48,7 @@ fn make_attr(ino: u64, size: u64, kind: FileType) -> FileAttr {
     }
 }
 
+/// FUSE implementation that maps local VFS operations to the remote HTTP API.
 pub struct RemoteFS {
     rc: RemoteClient,
     inode_counter: u64,
@@ -325,8 +329,7 @@ impl Filesystem for RemoteFS {
                     0,
                 );
             }
-            Err(e) => {
-                eprintln!("create failed {}: {}", full_path, e);
+            Err(_) => {
                 reply.error(libc::EIO);
             }
         }
@@ -408,8 +411,7 @@ impl Filesystem for RemoteFS {
                     self.rc.invalidate(&path);
                     reply.ok();
                 }
-                Err(e) => {
-                    eprintln!("\n  ✗ upload failed {}: {}", name, e);
+                Err(_) => {
                     reply.error(libc::EIO);
                 }
             }
@@ -508,13 +510,11 @@ impl Filesystem for RemoteFS {
             .unwrap_or(false);
 
         if is_dir {
-            if let Err(e) = self.rc.rename_dir_recursive(&old_path, &new_path) {
-                eprintln!("dir rename failed {}->{}: {}", old_path, new_path, e);
+            if self.rc.rename_dir_recursive(&old_path, &new_path).is_err() {
                 reply.error(libc::EIO);
                 return;
             }
-            if let Err(e) = self.rc.delete_remote(&old_path) {
-                eprintln!("dir rename cleanup failed {}: {}", old_path, e);
+            if self.rc.delete_remote(&old_path).is_err() {
                 reply.error(libc::EIO);
                 return;
             }

@@ -7,6 +7,7 @@ import os
 import uvicorn
 from dotenv import load_dotenv
 
+# Runtime configuration loaded from environment variables.
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", 8000))
 BASE_DIR = Path(os.getenv("BASE_DIR", "./storage"))
@@ -17,11 +18,14 @@ app = FastAPI()
 BASE_DIR = Path("./storage")
 BASE_DIR.mkdir(exist_ok=True)
 
+
+# Directory entry returned to clients for /list responses.
 class RemoteEntry(BaseModel):
     name: str
     is_dir: bool
     size: int
 
+# GET /list/{subpath}: returns direct children metadata for a directory.
 @app.get("/list/{subpath:path}")
 def list_dir(subpath: str):
     target = (BASE_DIR / subpath).resolve()
@@ -39,6 +43,7 @@ def list_dir(subpath: str):
         )
     return entries
 
+# GET /files/{subpath}: downloads a file; supports HTTP Range for partial reads.
 @app.get("/files/{subpath:path}")
 def read_file(subpath: str, range: str = Header(None)):
     target = (BASE_DIR / subpath).resolve()
@@ -47,7 +52,7 @@ def read_file(subpath: str, range: str = Header(None)):
 
     file_size = target.stat().st_size
 
-    # Support Range requests for streaming large files
+    # Handles partial reads so large files can be streamed efficiently.
     if range and range.startswith("bytes="):
         range_spec = range[6:]
         start_str, end_str = range_spec.split("-", 1)
@@ -73,6 +78,7 @@ def read_file(subpath: str, range: str = Header(None)):
 
     return FileResponse(target)
 
+# PUT /files/{subpath}: writes or replaces a file with the request body.
 @app.put("/files/{subpath:path}")
 async def write_file(subpath: str, request: Request):
     target = (BASE_DIR / subpath).resolve()
@@ -85,6 +91,7 @@ async def write_file(subpath: str, request: Request):
         raise HTTPException(status_code=500, detail=f"Write error: {e}")
     return {"status": "ok"}
 
+# POST /mkdir/{subpath}: creates a directory path recursively.
 @app.post("/mkdir/{subpath:path}")
 def create_dir(subpath: str):
     target = (BASE_DIR / subpath).resolve()
@@ -95,6 +102,7 @@ def create_dir(subpath: str):
     return {"status": "ok"}
 
 
+# DELETE /files/{subpath}: deletes a file or a directory tree.
 @app.delete("/files/{subpath:path}")
 def delete_path(subpath: str):
     target = (BASE_DIR / subpath).resolve()
