@@ -1,5 +1,4 @@
 mod remote_fs;
-mod mount;
 mod linux;
 mod macos;
 
